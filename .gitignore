@@ -1,0 +1,11 @@
+__pycache__
+
+*.ply
+*.pkl
+*.npz
+# training logs
+lightning_logs
+*.ckpt
+events.*
+# dataset
+datasets
