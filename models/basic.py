@@ -110,8 +110,8 @@ class BasicVAE(L.LightningModule):
         return loss, (loss_x.item(), loss_o.item(), loss_f.item(), loss_s.item(), loss_q.item())
     # =====================================================================================
 
-    def compute_SNR(self, x, y):
-        signal = y**2
+    def compute_SNR(self, x, y, peak=None):
+        signal = y**2 if peak is None else peak
         noises = (x - y)**2
         return 20 * torch.log10((signal / noises).clip(1e-6, 1e6)).mean().item()
 
@@ -141,20 +141,21 @@ class BasicVAE(L.LightningModule):
 
         metrics = {}
 
-        metrics['x/l1'] = torch.nn.functional.l1_loss(pred_x, true_x).item()
-        metrics['x/SNR'] = self.compute_SNR(pred_x, true_x)
-        metrics['x/sphere_distance'] = (torch.norm(pred_x-true_x, dim=gs_dims)).mean().item()
+        metrics['xyz_l1'] = torch.nn.functional.l1_loss(pred_x, true_x).item()
+        metrics['xyz_SNR'] = self.compute_SNR(pred_x, true_x, peak=1.0)
+        metrics['xyz_sphere_distance'] = (torch.norm(pred_x-true_x, dim=gs_dims)).mean().item()
 
-        metrics['o/l1'] = torch.nn.functional.l1_loss(pred_o, true_o).item()
-        metrics['o/SNR'] = self.compute_SNR(pred_o, true_o)
+        metrics['opacity_l1'] = torch.nn.functional.l1_loss(pred_o, true_o).item()
+        metrics['opacity_SNR'] = self.compute_SNR(pred_o, true_o, peak=1.0)
 
-        metrics['f/l1'] = torch.nn.functional.l1_loss(pred_f, true_f).item()
-        metrics['f/SNR'] = self.compute_SNR(pred_f, true_f)
+        metrics['feature_l1'] = torch.nn.functional.l1_loss(pred_f, true_f).item()
+        metrics['feature_SNR'] = self.compute_SNR(pred_f, true_f)
 
-        metrics['s/l1'] = torch.nn.functional.l1_loss(pred_s, true_s).item()
-        metrics['s/SNR'] = self.compute_SNR(pred_s, true_s)
+        metrics['scale_l1'] = torch.nn.functional.l1_loss(pred_s, true_s).item()
+        metrics['scale_SNR'] = self.compute_SNR(pred_s, true_s)
 
-        metrics['q/l1'] = torch.nn.functional.l1_loss(pred_q, true_q).item()
-        metrics['q/quat_distance'] = 1-(torch.sum(pred_q * true_q, dim=gs_dims).abs()).mean().item()
+        metrics['quat_l1'] = torch.nn.functional.l1_loss(pred_q, true_q).item()
+        metrics['quat_distance'] = 1-(torch.sum(pred_q * true_q, dim=gs_dims).abs()).mean().item()
+        metrics['quat_SNR'] = self.compute_SNR(pred_q, true_q)
 
         return metrics

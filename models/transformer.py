@@ -1,3 +1,5 @@
+from .svqvae import SVQVAE
+from utils.general import accuracy, top_p_sampling
 import math
 
 import lightning as L
@@ -8,29 +10,29 @@ from torch.nn import functional as F
 # from dataset import get_shifted_sequence
 from models.nanogpt import Block, LayerNorm, configure_optimizers
 from tqdm import tqdm
-
+import warnings
 
 class ARGSTransformer(L.LightningModule):
 
     def __init__(
             self,
             # ==================== vqvae params ====================
-            n_embed: int = 4096, # vocabulary size
-            embed_dim: int = 512,
+            n_embed: int = 4096,  # vocabulary size
+            embed_dim: int = 192, # 
             # ======================================================
 
             # ==================== model params ====================
             in_emb: int = 3, # unused
-            n_layer: int = 24,
+            n_layer: int = 1,
             n_head: int = 16, # unused
-            n_embd: int = 768,
+            n_embd: int = 64,
             # for pretraining 0 is good, for finetuning try 0.1+
             dropout: float = 0.0, 
             # do we use bias inside LayerNorm and Linear layers?
             bias: bool = False, 
             # context_size of the transformer, for good performance
             # block_size > max sequence length
-            block_size: int = 4608,
+            block_size: int = 65536,
             # ======================================================
 
             weight_decay: float = 1e-1, 
@@ -43,24 +45,20 @@ class ARGSTransformer(L.LightningModule):
 
         self.save_hyperparameters()
 
-        self.padding_idx = 2
+        self.padding_idx = 1
         vocab_size = n_embed + 1 + 1 + 1 # +1 for sos, +1 for pad, +1 for eos
         self.vocab_size = vocab_size
         print('Model Vocab Size:', vocab_size)
         print('Model Padding Index:', self.padding_idx)
-        # print('Model Fin Size:', self.finemb_size)
-        # print('Model Fout Size:', self.foutemb_size)
         self.input_layer = nn.Linear(embed_dim, n_embd)
         self.extra_embeds = nn.Embedding(3, n_embd, padding_idx=self.padding_idx)
         self.transformer = nn.ModuleDict(dict(
             wpe=nn.Embedding(block_size, n_embd),
-            # wfie=nn.Embedding(self.finemb_size, n_embd, padding_idx=self.padding_idx),
-            # wfoe=nn.Embedding(self.foutemb_size, n_embd, padding_idx=self.padding_idx),
             drop=nn.Dropout(dropout),
             h=nn.ModuleList([Block(bias, block_size, dropout, n_embd, n_head) for _ in range(n_layer)]),
             ln_f=LayerNorm(n_embd, bias=bias),
         ))
-        self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
+        self.lm_head = nn.Linear(n_embd, 2*vocab_size, bias=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -79,29 +77,23 @@ class ARGSTransformer(L.LightningModule):
         acc = accuracy(logits.detach(), sequence_out, ignore_label=2, device=self.device)
         self.log("train/ce_loss", loss.item(), on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=True)
         self.log("train/acc", acc.item(), on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=True)
-        loss = loss / self.config.gradient_accumulation_steps  # scale the loss to account for gradient accumulation
-        self.manual_backward(loss)
-        # accumulate gradients of `n` batches
-        if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
-            step(optimizer, [self.model])
-            optimizer.zero_grad(set_to_none=True)  # type: ignore
-        self.log("lr", optimizer.param_groups[0]['lr'], on_step=True, on_epoch=False, prog_bar=False, logger=True, sync_dist=True)  # type: ignore
+
+        return loss
 
     def forward(self, f_hat, idx, sequence_mask, targets=None, kv_cache=None, mask_cache=None):
         use_kv_cache = kv_cache is not None
         device = f_hat.device
         b, t = idx.shape
         assert t <= self.hparams.block_size, f"Cannot forward sequence of length {t}, block size is only {self.hparams.block_size}"
-
-        embed = torch.zeros((b * (t+1), self.hparams.n_embd), dtype=torch.float32, device=self.device)
-        idx_in_extra = torch.isin(idx, torch.LongTensor([0, 1]).to(self.device)).reshape(-1)
+        
+        embed = torch.zeros((b * t, self.hparams.n_embd), dtype=torch.float32, device=self.device)
+        idx_in_extra = torch.isin(idx, torch.LongTensor([0, 1, 2]).to(self.device)).reshape(-1)
         idx_flat = idx.reshape(-1)
         embed[idx_in_extra, :] = self.extra_embeds(idx_flat[idx_in_extra])
-        embed[~idx_in_extra, :] = self.input_layer(tokenizer.embed(idx_flat[~idx_in_extra] - 2))
+        embed[~idx_in_extra, :] = self.input_layer(f_hat.view(b * t, -1)[~idx_in_extra])
         tok_emb = embed.reshape(b, t, -1)  # token embeddings of shape (b, t, n_embd)
 
-        # position embedding
-
+        # position embedding\
         if kv_cache is not None and kv_cache[0].numel():
             pos = kv_cache[0].shape[-2]  # kv_cache of shape: num_layers * (2, B, nh, T, hs)
             pos_emb = self.transformer.wpe.weight[None, pos]  # 1 x n_embd
@@ -111,7 +103,7 @@ class ARGSTransformer(L.LightningModule):
             pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
             mask = None
 
-        sum_emb = tok_emb + pos_emb + finemb + foutemb
+        sum_emb = tok_emb + pos_emb
         # print('shapes:', tok_emb.shape, pos_emb.shape, coord_emb.shape)
         x = self.transformer.drop(sum_emb)
 
@@ -128,7 +120,9 @@ class ARGSTransformer(L.LightningModule):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=self.padding_idx)
+            logits = logits.view(b, t, 2, self.vocab_size) # split to two head
+            logits = logits.permute(0, 3, 1, 2) # [N, C, S, 2]
+            loss = F.cross_entropy(logits, targets, ignore_index=self.padding_idx)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :])  # note: using list [-1] to preserve the time dim
@@ -189,7 +183,7 @@ class ARGSTransformer(L.LightningModule):
             # sample from the distribution
             # apply softmax to convert logits to (normalized) probabilities
             if top_p is not None:
-                idx_next = self.top_p_sampling(logits, top_p)
+                idx_next = top_p_sampling(logits, top_p)
             else:
                 probs = F.softmax(logits, dim=-1)
                 idx_next = torch.multinomial(probs, num_samples=1)
@@ -323,14 +317,17 @@ class ARGSTransformer(L.LightningModule):
             self.hparams.device_type
         )
     
-    @staticmethod
-    def top_p_sampling(logits, p):
-        probs = torch.softmax(logits, dim=-1)
-        probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
-        probs_sum = torch.cumsum(probs_sort, dim=-1)
-        mask = probs_sum - probs_sort > p
-        probs_sort[mask] = 0.0
-        probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
-        next_token = torch.multinomial(probs_sort, num_samples=1)
-        next_token = torch.gather(probs_idx, -1, next_token)
-        return next_token
+    def optimizer_step(self, *args, **kwargs):
+        super().optimizer_step(*args, **kwargs)
+        lr_schedulers = self.lr_schedulers()
+        if lr_schedulers is None:
+            warnings.warn("No lr_schedulers found")
+        elif isinstance(lr_schedulers, list):
+            for lr_scheduler in lr_schedulers:
+                self.log_scheduler_lr(lr_scheduler)
+        else:
+            self.log_scheduler_lr(lr_schedulers)
+    
+    def log_scheduler_lr(self, lr_scheduler):
+        for i in range(len(lr_scheduler.get_last_lr())):
+            self.log(f"lr/last_lr_{i}", lr_scheduler.get_last_lr()[i], sync_dist=True)

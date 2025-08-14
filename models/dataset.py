@@ -2,7 +2,6 @@ from models.svqvae import SVQVAE
 from utils.gaussian import norm_quats
 from utils.quantize import Quantize
 
-
 from torch.utils.data import Dataset, DataLoader, random_split
 from typing import Union
 from pathlib import Path
@@ -167,59 +166,74 @@ class MergeGaussianDataset(Dataset):
         root: Union[str, Path],
         permute=False,
         max_seq=None,
-        crop_min=None,
-        crop_max=None,
+        load_in_memory=True,
     ):
         if isinstance(root, str):
             root = Path(root)
 
         self.root = root
         self.quantize = Quantize()
+        
+        self.data_files = sorted(root.glob('*.npz'))
+        print(f"fetch {len(self.data_files)} files")
+        
+        if load_in_memory:
+            self.source = []
+            self.target = []
+            self.indice = []
+            for data_file in tqdm(self.data_files, desc='loading data'):
+                data = np.load(data_file)
+                source = torch.from_numpy(data['source']).to(torch.float)
+                target = torch.from_numpy(data['target']).to(torch.float)
+                
+                if permute:
+                    source = source.permute(0, 2, 1)
+                
+                if max_seq is not None:
+                    source = source[:max_seq]
+                    target = target[:max_seq]
 
-        self.crop_min = crop_min
-        self.crop_max = crop_max
-        
-        data_files = list(root.glob('*.npz'))
-        
-        self.source = []
-        self.target = []
-        self.indice = []
-        for data_file in data_files:
+                source = self.quantize(source)
+                target = self.quantize(target)
+
+                indice = torch.arange(len(source))
+
+                self.source.append(source)
+                self.target.append(target)
+                self.indice.append(indice)
+        else:
+            self.source = None
+            self.target = None
+            self.indice = None
+
+            self.permute = permute
+            self.max_seq = max_seq
+
+    def __len__(self):
+        return len(self.data_files)
+    
+    def __getitem__(self, index):
+        if self.source is None or self.target is None or self.indice is None:
+            data_file = self.data_files[index]
             data = np.load(data_file)
             source = torch.from_numpy(data['source']).to(torch.float)
             target = torch.from_numpy(data['target']).to(torch.float)
-            
-            if permute:
+
+            if self.permute:
                 source = source.permute(0, 2, 1)
-            
-            if max_seq is not None:
-                source = source[:max_seq]
-                target = target[:max_seq]
+
+            if self.max_seq is not None:
+                source = source[:self.max_seq]
+                target = target[:self.max_seq]
 
             source = self.quantize(source)
             target = self.quantize(target)
 
             indice = torch.arange(len(source))
+        else:
+            source, target, indice = self.source[index], self.target[index], self.indice[index]
 
-            self.source.append(source)
-            self.target.append(target)
-            self.indice.append(indice)
-
-        self.len = len(self.source)
-
-    def __len__(self):
-        return self.len
-    
-    def __getitem__(self, index):
-        source, target, indice = self.source[index], self.target[index], self.indice[index]
-        if self.crop_min is not None and self.crop_max is not None:
-            crop_len = torch.rand((1,)) * (self.crop_max-self.crop_min) + self.crop_min
-            crop_len = len(source) * crop_len
-            crop_len = crop_len.long()
-            
-            source = source[:crop_len]
-            target = target[:crop_len]
-            indice = indice[:crop_len]
+        # don't do data enhance here, because it may change the merge list    
         return source, target, indice
 
 # ===================================================
@@ -229,16 +243,13 @@ class MergeGaussianDataModule(LightningDataModule):
     def __init__(
             self, 
             root, 
-            max_seq=None, 
-            batch_size=4, 
-            num_workers=1, 
-            permute=False, 
+            max_seq=None,
+            batch_size=None,
+            num_workers=16,
+            permute=False,
             shuffle=True,
-            crop_min=0.1,
-            crop_max=1.0,
-            train_split=0.5, 
-            small_batch=4096, 
-            drop_last=False
+            train_split=0.99,
+            load_in_memory=True,
         ):
         super().__init__()
 
@@ -250,8 +261,7 @@ class MergeGaussianDataModule(LightningDataModule):
                 self.hparams.root,
                 self.hparams.permute,
                 self.hparams.max_seq,
-                self.hparams.crop_min,
-                self.hparams.crop_max
+                self.hparams.load_in_memory,
             )
             self.train_dataset, self.val_dataset = random_split(dataset, (self.hparams.train_split, 1-self.hparams.train_split))
             
@@ -259,24 +269,25 @@ class MergeGaussianDataModule(LightningDataModule):
             self.test_dataset = MergeGaussianDataset(
                 self.hparams.root,
                 self.hparams.permute,
-                self.hparams.max_seq
+                self.hparams.max_seq,
+                load_in_memory=self.hparams.load_in_memory,
             )
         elif stage == "predict":
             self.predict_dataset = MergeGaussianDataset(
                 self.hparams.root,
                 self.hparams.permute,
-                self.hparams.max_seq
+                self.hparams.max_seq,
+                load_in_memory=self.hparams.load_in_memory,
             )
 
-    @staticmethod
-    def collate_fn(batch):
+    def collate_fn(self, batch):
         padded_source = torch.nn.utils.rnn.pad_sequence([data[0] for data in batch], batch_first=True)
         padded_target = torch.nn.utils.rnn.pad_sequence([data[1] for data in batch], batch_first=True)
         padded_indice = torch.nn.utils.rnn.pad_sequence([data[2] for data in batch], batch_first=True)
         padded_mask = torch.nn.utils.rnn.pad_sequence([torch.ones(data[0].shape[0]) for data in batch], batch_first=True)
 
         return padded_source, padded_target, padded_indice, padded_mask.type(torch.bool)
-    
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
@@ -330,9 +341,11 @@ class ARGaussianDataModule(LightningDataModule):
 
         self.save_hyperparameters()
 
+        self.vqvae = SVQVAE.load_from_checkpoint(vqvae)
+
     @torch.no_grad()
     def prepare_data(self):        
-        vqvae = SVQVAE.load_from_checkpoint(self.hparams.vqvae)
+        
         vqvae.freeze()
 
         self.data = []

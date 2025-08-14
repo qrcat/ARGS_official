@@ -53,3 +53,20 @@ def top_p_sampling(logits, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
+def accuracy(y_pred, y_true, ignore_label=None, device=None):
+    y_pred = y_pred.argmax(dim=1)
+
+    if ignore_label:
+        normalizer = torch.sum(y_true != ignore_label)  # type: ignore
+        ignore_mask = torch.where(  # type: ignore
+            y_true == ignore_label,
+            torch.zeros_like(y_true, device=device),
+            torch.ones_like(y_true, device=device)
+        ).type(torch.float32)
+    else:
+        normalizer = y_true.shape[0]
+        ignore_mask = torch.ones_like(y_true, device=device).type(torch.float32)
+    acc = (y_pred.reshape(-1) == y_true.reshape(-1)).type(torch.float32)  # type: ignore
+    acc = torch.sum(acc*ignore_mask.flatten())
+    return acc / normalizer

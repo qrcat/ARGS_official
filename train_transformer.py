@@ -14,12 +14,14 @@ from models.dataset import MergeGaussianDataModule, ARGaussianDataModule
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-svar = ARGSTransformer()
+svar = ARGSTransformer(
+    
+)
 
 dataset = ARGaussianDataModule(
     "/data/workspace/ARGS/datasets",
-    vqvae="log_svqvae/lightning_logs/version_2/checkpoints/epoch=9999-step=10000.ckpt",
-    permute=True,
+    vqvae="log_svqvae/lightning_logs/version_20/checkpoints/epoch=203-step=204.ckpt",
+    permute=True, batch_size=2,
 )
 
 trainer = L.Trainer(limit_train_batches=100, max_epochs=10000, log_every_n_steps=1)

@@ -1,5 +1,5 @@
 from utils.io import activated_gs2train_gs
-from pgs import PGS, PGSMoments
+from pgs import PGSMoments
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
