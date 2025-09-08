@@ -1,4 +1,5 @@
-from .svqvae import SVQVAE
+from .basic import ScaleGaussianSplat
+from .sin_encoder import GaussianSinEncoder, SinPositionEncoding
 from utils.general import accuracy, top_p_sampling
 import math
 
@@ -16,16 +17,12 @@ class ARGSTransformer(L.LightningModule):
 
     def __init__(
             self,
-            # ==================== vqvae params ====================
-            n_embed: int = 4096,  # vocabulary size
-            embed_dim: int = 192, # 
-            # ======================================================
-
+            gs_dims: int = 14,
+            gs_nums: int = 2,
             # ==================== model params ====================
-            in_emb: int = 3, # unused
-            n_layer: int = 1,
-            n_head: int = 16, # unused
-            n_embd: int = 64,
+            n_layer: int = 24,
+            n_head: int = 16,
+            n_embd: int = 768,
             # for pretraining 0 is good, for finetuning try 0.1+
             dropout: float = 0.0, 
             # do we use bias inside LayerNorm and Linear layers?
@@ -34,7 +31,6 @@ class ARGSTransformer(L.LightningModule):
             # block_size > max sequence length
             block_size: int = 65536,
             # ======================================================
-
             weight_decay: float = 1e-1, 
             learning_rate: float = 1e-4, # max learning rate
             beta1: float = 0.9,
@@ -44,21 +40,22 @@ class ARGSTransformer(L.LightningModule):
         super().__init__()
 
         self.save_hyperparameters()
-
-        self.padding_idx = 1
-        vocab_size = n_embed + 1 + 1 + 1 # +1 for sos, +1 for pad, +1 for eos
-        self.vocab_size = vocab_size
-        print('Model Vocab Size:', vocab_size)
-        print('Model Padding Index:', self.padding_idx)
-        self.input_layer = nn.Linear(embed_dim, n_embd)
-        self.extra_embeds = nn.Embedding(3, n_embd, padding_idx=self.padding_idx)
+        
+        sin_dims = 16
+        self.scale_gs = ScaleGaussianSplat()
+        self.sin_encoder = GaussianSinEncoder(sin_dims, True, True, True, True, embed_q=False)
+        
+        # embed the first token
+        self.first_layer = nn.Linear(self.sin_encoder.out_dim, n_embd)
+        # embed the other token
+        self.input_layer = nn.Linear(self.sin_encoder.out_dim*gs_nums, n_embd)
         self.transformer = nn.ModuleDict(dict(
             wpe=nn.Embedding(block_size, n_embd),
             drop=nn.Dropout(dropout),
             h=nn.ModuleList([Block(bias, block_size, dropout, n_embd, n_head) for _ in range(n_layer)]),
             ln_f=LayerNorm(n_embd, bias=bias),
         ))
-        self.lm_head = nn.Linear(n_embd, 2*vocab_size, bias=False)
+        self.lm_head = nn.Linear(n_embd, gs_dims*gs_nums, bias=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -70,30 +67,110 @@ class ARGSTransformer(L.LightningModule):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
-    def training_step(self, batch, batch_idx):
-        sequence_in, sequence_idx, sequence_out, sequence_mask = batch
+        self.pos_act = lambda x: torch.tanh(x)
+        self.opa_act = lambda x: torch.sigmoid(x)
+        self.scl_act = lambda x: 0.1 * F.softplus(x)
+        self.rot_act = lambda x, dim: F.normalize(x, dim=dim)
 
-        logits, loss = self(sequence_in, sequence_idx, sequence_mask, targets=sequence_out)
-        acc = accuracy(logits.detach(), sequence_out, ignore_label=2, device=self.device)
-        self.log("train/ce_loss", loss.item(), on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=True)
-        self.log("train/acc", acc.item(), on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=True)
+    def training_step(self, batch, batch_idx):
+        source, target, indice, bhmask = batch
+        
+        pred = self(target[:, :1], source, indice)
+
+        loss_x = torch.nn.functional.l1_loss(self.pos_act(pred[..., :3]), source[..., :3]) * 2
+        loss_o = torch.nn.functional.l1_loss(self.opa_act(pred[..., 3:4]), source[..., 3:4]) * 1.5
+        loss_f = torch.nn.functional.l1_loss(pred[..., 4:7], source[..., 4:7].clip(min=-1.772453850905516, max=1.772453850905516)) / 1.772453850905516
+        loss_s = torch.nn.functional.l1_loss(self.scl_act(pred[..., 7:10]), source[..., 7:10]) * 10
+        
+        dot_product = torch.sum(self.rot_act(pred[..., 10:], dim=-1) * source[..., 10:], dim=-1).abs()
+        loss_q = 1 - dot_product.mean()
+
+        loss = loss_x + loss_o + loss_f + loss_s + loss_q
+
+        self.log_dict({
+            'loss/train_loss': loss,
+            'loss/loss_x': loss_x,
+            'loss/loss_o': loss_o,
+            'loss/loss_f': loss_f,
+            'loss/loss_s': loss_s,
+            'loss/loss_q': loss_q,
+        })
 
         return loss
 
-    def forward(self, f_hat, idx, sequence_mask, targets=None, kv_cache=None, mask_cache=None):
-        use_kv_cache = kv_cache is not None
-        device = f_hat.device
-        b, t = idx.shape
-        assert t <= self.hparams.block_size, f"Cannot forward sequence of length {t}, block size is only {self.hparams.block_size}"
+    def compute_SNR(self, x, y, peak=None):
+        """Compute Signal-to-Noise Ratio (SNR) between x and y."""
         
-        embed = torch.zeros((b * t, self.hparams.n_embd), dtype=torch.float32, device=self.device)
-        idx_in_extra = torch.isin(idx, torch.LongTensor([0, 1, 2]).to(self.device)).reshape(-1)
-        idx_flat = idx.reshape(-1)
-        embed[idx_in_extra, :] = self.extra_embeds(idx_flat[idx_in_extra])
-        embed[~idx_in_extra, :] = self.input_layer(f_hat.view(b * t, -1)[~idx_in_extra])
-        tok_emb = embed.reshape(b, t, -1)  # token embeddings of shape (b, t, n_embd)
+        signal = y**2 if peak is None else torch.full_like(y, peak**2)
+        noises = (x - y)**2
+        return 20 * (torch.log10((signal) - torch.log10(noises.clip(min=1e-5)))).mean().item()
 
-        # position embedding\
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx) -> None:
+        source, target, indice, mask = batch
+        
+        pred = self(target[:, :1], source, indice)
+
+        true_x, true_o, true_f, true_s, true_q = source.split([3, 1, 3, 3, 4], dim=-1)
+        # prepare the predict
+        pred_x, pred_o, pred_f, pred_s, pred_q = pred.split([3, 1, 3, 3, 4], dim=-1)
+        
+        pred_x = self.pos_act(pred_x)
+        pred_o = self.opa_act(pred_o)
+        pred_f = pred_f
+        pred_s = self.scl_act(pred_s)
+        pred_q = self.rot_act(pred_q, dim=-1)
+
+        pred_x = pred_x[mask]
+        pred_o = pred_o[mask]
+        pred_f = pred_f[mask]
+        pred_s = pred_s[mask]
+        pred_q = pred_q[mask]
+
+        true_x = true_x[mask]
+        true_o = true_o[mask]
+        true_f = true_f[mask]
+        true_s = true_s[mask]
+        true_q = true_q[mask]
+
+        metrics = {
+            "eval/l1_xyz": torch.nn.functional.l1_loss(pred_x, true_x).item(),
+            "eval/SNR_xyz": self.compute_SNR(pred_x, true_x, peak=1.0),
+            "eval/sphere_distance_xyz": (torch.norm(pred_x-true_x, dim=-1)).mean().item(),
+
+            "eval/l1_opacity": torch.nn.functional.l1_loss(pred_o, true_o).item(),
+            "eval/SNR_opacity": self.compute_SNR(pred_o, true_o, peak=1.0),
+
+            "eval/l1_feature": torch.nn.functional.l1_loss(pred_f, true_f).item(),
+            "eval/SNR_feature": self.compute_SNR(pred_f, true_f, peak=1.78),
+
+            "eval/l1_scale": torch.nn.functional.l1_loss(pred_s, true_s).item(),
+            "eval/SNR_scale": self.compute_SNR(pred_s, true_s),
+
+            "eval/quat_distance": 1-(torch.sum(pred_q * true_q, dim=-1).abs()).mean().item(),
+        }
+
+        self.log_dict(metrics, sync_dist=True)
+
+
+    def forward(self, init, gaussian, indice, kv_cache=None, mask_cache=None):
+        use_kv_cache = kv_cache is not None
+        device = gaussian.device
+        b, t = indice.shape
+        assert t <= self.hparams.block_size, f"Cannot forward sequence of length {t}, block size is only {self.hparams.block_size}"
+
+        init = self.scale_gs.forward(init)
+        init = self.sin_encoder(init)
+        tok_fst = self.first_layer(init)
+
+        gaussian = self.scale_gs.forward(gaussian[:, :-1])    
+        gaussian = self.sin_encoder(gaussian)
+        gaussian = gaussian.flatten(-2, -1)
+        tok_app = self.input_layer(gaussian)
+
+        tok_emb = torch.cat([tok_fst, tok_app], dim=1)
+        
+        # position embedding
         if kv_cache is not None and kv_cache[0].numel():
             pos = kv_cache[0].shape[-2]  # kv_cache of shape: num_layers * (2, B, nh, T, hs)
             pos_emb = self.transformer.wpe.weight[None, pos]  # 1 x n_embd
@@ -103,7 +180,7 @@ class ARGSTransformer(L.LightningModule):
             pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
             mask = None
 
-        sum_emb = tok_emb + pos_emb
+        sum_emb = tok_emb + pos_emb[None]
         # print('shapes:', tok_emb.shape, pos_emb.shape, coord_emb.shape)
         x = self.transformer.drop(sum_emb)
 
@@ -117,21 +194,10 @@ class ARGSTransformer(L.LightningModule):
 
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            logits = logits.view(b, t, 2, self.vocab_size) # split to two head
-            logits = logits.permute(0, 3, 1, 2) # [N, C, S, 2]
-            loss = F.cross_entropy(logits, targets, ignore_index=self.padding_idx)
-        else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :])  # note: using list [-1] to preserve the time dim
-            loss = None
+        output = self.lm_head(x)
 
-        if not use_kv_cache:
-            return logits, loss
-        else:
-            return logits, new_kv_cache
+        return output.view(b, t, self.hparams.gs_nums, self.hparams.gs_dims)
+
 
     @torch.no_grad()
     def generate(self, idx, fin, fout, tokenizer, max_new_tokens=10000, temperature=1.0, top_k=None, top_p=0.9, use_kv_cache=False):
@@ -322,6 +388,9 @@ class ARGSTransformer(L.LightningModule):
         lr_schedulers = self.lr_schedulers()
         if lr_schedulers is None:
             warnings.warn("No lr_schedulers found")
+            optimizer = self.optimizers().optimizer
+            for i, param in enumerate(optimizer.param_groups):
+                self.log(f"lr/last_lr_{i}", param['lr'], sync_dist=True)
         elif isinstance(lr_schedulers, list):
             for lr_scheduler in lr_schedulers:
                 self.log_scheduler_lr(lr_scheduler)

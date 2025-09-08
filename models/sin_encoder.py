@@ -37,7 +37,7 @@ class SinPositionEncoding(nn.Module):
 
 class SinEncoder(nn.Module):
     """
-    Map (x,) to [sin(x), cos(x), sin(2x), cos(2x), ...]
+    "Map (x,) to [x, sin (x), cos (x), sin (2x), cos (2x), ...]"
     """
     def __init__(self, dmodel=32):
         super().__init__()

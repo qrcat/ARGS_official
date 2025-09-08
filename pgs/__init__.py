@@ -1,10 +1,10 @@
-from .merge import merge_gaussian_inv, merge_gaussian_moments
+from .merge import merge_gaussian, merge_gaussian_inv, merge_gaussian_moments
 from utils.io import get_combinable_gaussian, activated_gs2gs, activated_gs2train_gs, gs2activated_gs, save_ply, load_ply
 from utils.quantize import Quantize
 from utils.gaussian import build_sigma, unpack_sigma, norm_quats
 
 from typing import List
-
+from pathlib import Path
 from tqdm import tqdm, trange
 from scipy.spatial.transform import Rotation as R
 # import kdtree
@@ -267,7 +267,8 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
         return merge_list
 
     @staticmethod
-    def load(path, save=True, debug=False) -> 'PGSMoments':
+    def load(path, save=False, debug=False) -> 'PGSMoments':
+        path = Path(path)
         pkl = path.with_suffix('.pkl')
         if os.path.exists(pkl):
             with open(pkl, 'rb') as f:

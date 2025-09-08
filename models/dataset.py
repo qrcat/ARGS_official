@@ -10,6 +10,8 @@ from lightning import LightningDataModule
 from math import log2
 import json
 import torch
+import pickle
+import warnings
 import numpy as np
 import torch.nn.functional as F
 
@@ -172,64 +174,95 @@ class MergeGaussianDataset(Dataset):
             root = Path(root)
 
         self.root = root
-        self.quantize = Quantize()
-        
         self.data_files = sorted(root.glob('*.npz'))
         print(f"fetch {len(self.data_files)} files")
         
+        self.permute = permute
+        self.max_seq = max_seq
+
+        self.quantize = Quantize()
+
         if load_in_memory:
-            self.source = []
-            self.target = []
-            self.indice = []
-            for data_file in tqdm(self.data_files, desc='loading data'):
-                data = np.load(data_file)
-                source = torch.from_numpy(data['source']).to(torch.float)
-                target = torch.from_numpy(data['target']).to(torch.float)
-                
-                if permute:
-                    source = source.permute(0, 2, 1)
-                
-                if max_seq is not None:
-                    source = source[:max_seq]
-                    target = target[:max_seq]
+            caches = sorted(self.root.glob('cache_*.pkl'))
+            if caches:
+                self.source = []
+                self.target = []
+                self.indice = []
 
-                source = self.quantize(source)
-                target = self.quantize(target)
+                for cache in tqdm(caches, desc="fetch cache"):
+                    with open(cache, "rb") as f:
+                        source, target, indice = pickle.load(f)
+                    
+                    self.source += source
+                    self.target += target
+                    self.indice += indice
+                    print(f"load cache from {cache}")
+            else:
+                try:
+                    from joblib import Parallel, delayed
 
-                indice = torch.arange(len(source))
+                    batch = 5000
+                    epoch = np.ceil(len(self.data_files) / batch)
+                    # only save by main process
+                    for i in range(int(epoch)):
+                        cache = self.root / f"cache_{i:04d}.pkl"
 
-                self.source.append(source)
-                self.target.append(target)
-                self.indice.append(indice)
+                        output = Parallel(n_jobs=32)(delayed(self.fetch_data)(i) for i in tqdm(self.data_files[i*batch:(i+1)*batch], desc='loading data'))
+
+                        source, target, indice = zip(*output)
+                        
+                        with open(cache, "wb") as f: pickle.dump((source, target, indice), f)
+                        print(f"save cache to {cache}")
+
+                        del output, source, target, indice
+
+                    exit(0)
+                except:
+                    warnings.warn("joblib is not installed, will not use parallel")
+                    self.source = []
+                    self.target = []
+                    self.indice = []
+                    for data_file in tqdm(self.data_files, desc='loading data'):
+                        try:
+                            source, target, indice = self.fetch_data(data_file)
+                        
+                            self.source.append(source)
+                            self.target.append(target)
+                            self.indice.append(indice)
+                        except:
+                            warnings.warn(f"error loading {data_file}")
+                            continue
         else:
             self.source = None
             self.target = None
             self.indice = None
 
-            self.permute = permute
-            self.max_seq = max_seq
+    def fetch_data(self, data_file):
+        data = np.load(data_file)
+        source = torch.from_numpy(data['source']).to(torch.float)
+        target = torch.from_numpy(data['target']).to(torch.float)
+        
+        if self.permute:
+            source = source.permute(0, 2, 1)
+        
+        if self.max_seq is not None:
+            source = source[:self.max_seq]
+            target = target[:self.max_seq]
 
+        source = self.quantize(source)
+        target = self.quantize(target)
+
+        indice = torch.arange(len(source))
+
+        return source, target, indice
+    
     def __len__(self):
         return len(self.data_files)
     
     def __getitem__(self, index):
         if self.source is None or self.target is None or self.indice is None:
             data_file = self.data_files[index]
-            data = np.load(data_file)
-            source = torch.from_numpy(data['source']).to(torch.float)
-            target = torch.from_numpy(data['target']).to(torch.float)
-
-            if self.permute:
-                source = source.permute(0, 2, 1)
-
-            if self.max_seq is not None:
-                source = source[:self.max_seq]
-                target = target[:self.max_seq]
-
-            source = self.quantize(source)
-            target = self.quantize(target)
-
-            indice = torch.arange(len(source))
+            source, target, indice = self.fetch_data(data_file)
         else:
             source, target, indice = self.source[index], self.target[index], self.indice[index]
 
@@ -255,30 +288,20 @@ class MergeGaussianDataModule(LightningDataModule):
 
         self.save_hyperparameters()
 
+        self.dataset = MergeGaussianDataset(
+            self.hparams.root,
+            self.hparams.permute,
+            self.hparams.max_seq,
+            self.hparams.load_in_memory,
+        )
+
     def setup(self, stage):
         if stage == "fit" or stage is None:
-            dataset = MergeGaussianDataset(
-                self.hparams.root,
-                self.hparams.permute,
-                self.hparams.max_seq,
-                self.hparams.load_in_memory,
-            )
-            self.train_dataset, self.val_dataset = random_split(dataset, (self.hparams.train_split, 1-self.hparams.train_split))
-            
+            self.train_dataset, self.val_dataset = random_split(self.dataset, (self.hparams.train_split, 1-self.hparams.train_split))
         elif stage == "test" or stage is None:
-            self.test_dataset = MergeGaussianDataset(
-                self.hparams.root,
-                self.hparams.permute,
-                self.hparams.max_seq,
-                load_in_memory=self.hparams.load_in_memory,
-            )
+            self.test_dataset = self.dataset
         elif stage == "predict":
-            self.predict_dataset = MergeGaussianDataset(
-                self.hparams.root,
-                self.hparams.permute,
-                self.hparams.max_seq,
-                load_in_memory=self.hparams.load_in_memory,
-            )
+            self.predict_dataset = self.dataset
 
     def collate_fn(self, batch):
         padded_source = torch.nn.utils.rnn.pad_sequence([data[0] for data in batch], batch_first=True)
@@ -301,7 +324,7 @@ class MergeGaussianDataModule(LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.hparams.batch_size,
-            num_workers=self.hparams.num_workers,
+            # num_workers=self.hparams.num_workers,
             collate_fn=self.collate_fn,
         )
     

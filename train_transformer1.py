@@ -1,5 +1,5 @@
-from models.svqvae import SVQVAE
 from models.dataset import MergeGaussianDataset, MergeGaussianDataModule
+from models.transformer import ARGSTransformer
 
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -15,25 +15,17 @@ import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # model
-    parser.add_argument('--gaussian_dim', type=int, default=14)
-    parser.add_argument('--sin_dims', type=int, default=32)
-    parser.add_argument('--z_channels', type=int, default=256)
-    # vq config
-    parser.add_argument('--n_embed', type=int, default=4096, help="number of vqvae embeddings")
-    parser.add_argument('--embed_dim', type=int, default=192)
-    parser.add_argument('--embed_levels', type=int, default=8)
     # train
     parser.add_argument('--max_epochs', type=int, default=1000)
-    parser.add_argument('--log_dir', type=str, default="log_svqvae")
+    parser.add_argument('--log_dir', type=str, default="log_transformer")
     parser.add_argument('--devices', type=int, nargs='+', default=[0])
     parser.add_argument('--f32precision', type=str, default='medium', choices=['high', 'medium'])
     parser.add_argument('--gradient_clip_val', type=float, default=1.0)
-    parser.add_argument('--accumulate_grad_batches', type=int, default=8)
+    parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     # dataset
     parser.add_argument('--dataset', type=str, default="/mnt/private_rqy/gs_data/merge")
     parser.add_argument('--max_seq', type=int, default=16384)
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=32)
     parser.add_argument('--crop_min', type=int, default=None)
     parser.add_argument('--crop_max', type=int, default=None)
@@ -63,28 +55,7 @@ if __name__ == "__main__":
     dataset = init_dataset()
 
     if not args.eval:
-        # compute the kmeans iters
-        def compute_kmeans_iters():
-            return ceil(len(dataset.dataset) * args.train_split / len(args.devices) / args.batch_size)
-
-        def init_model(kmeans_iters):
-                return SVQVAE(
-                gaussian_dim=args.gaussian_dim,
-                sin_dims=args.sin_dims,
-                z_channels=args.z_channels,
-                # vq config
-                n_embed=args.n_embed,
-                embed_dim=args.embed_dim,
-                embed_levels=args.embed_levels,
-                kmeans_iters=kmeans_iters,
-                # data augmentation
-                crop_min=args.crop_min,
-                crop_max=args.crop_max,
-            )
-        
-        kmeans_iters = compute_kmeans_iters()
-
-        vqvae = init_model(kmeans_iters)
+        vqvae = ARGSTransformer()
     
         checkpoint_callback = ModelCheckpoint(
             every_n_epochs=1,
@@ -102,6 +73,8 @@ if __name__ == "__main__":
             accumulate_grad_batches=args.accumulate_grad_batches,
             # device
             devices=args.devices,
+            strategy="deepspeed_stage_2", 
+            precision='16-mixed',
         )
         trainer.fit(vqvae, datamodule=dataset, ckpt_path=args.checkpoint)
     else:

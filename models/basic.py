@@ -55,7 +55,7 @@ class BasicVAE(L.LightningModule):
     
     @staticmethod
     def activate_scale(scale_before_activated, indice):
-        scale_mul = 0.9 * (1-torch.log2(indice+1).clip(max=16)/16) + 0.1
+        scale_mul = BasicVAE.scale_mul(indice)
         return scale_mul[..., None, None] * 0.1 * F.softplus(scale_before_activated)
     
     def to_activated(self, x, indices):
@@ -65,14 +65,18 @@ class BasicVAE(L.LightningModule):
         x[..., 7:10] = self.activate_scale(x[..., 7:10], indices)
         x[..., 10:] = self.rot_act(x[..., 10:], dim=-1)
         return x
+    
+    @staticmethod
+    def scale_mul(indice):
+        return 0.9 * (1-torch.log2(indice+1).clip(max=16)/16) + 0.1
 
     # =============================== only used on training ===============================
     def reconstruct_loss(self, x, y, indice, mask=None, gs_dims=-1, weights=None):
         true_x, true_o, true_f, true_s, true_q = y.split([3, 1, 3, 3, 4], dim=gs_dims)
         pred_x, pred_o, pred_f, pred_s, pred_q = x.split([3, 1, 3, 3, 4], dim=gs_dims)
         # here, we use the scale_mul for the true scale in training
-        scale_mul = 0.9 * (1-torch.log2(indice+1).clip(max=16)/16) + 0.1
-        true_s = true_s/scale_mul[..., None, None]
+        # scale_mul = self.scale_mul(indice)
+        # true_s = true_s/scale_mul[..., None, None]
 
         pred_x = self.pos_act(pred_x)
         pred_o = self.opacity_act(pred_o)
@@ -123,7 +127,8 @@ class BasicVAE(L.LightningModule):
 
         pred_x = self.pos_act(pred_x)
         pred_o = self.opacity_act(pred_o)
-        pred_s = self.scale_act(pred_s, indice)
+        # pred_s = self.scale_act(pred_s, indice)
+        pred_s = 0.1 * F.softplus(pred_s)
         pred_q = self.rot_act(pred_q, dim=gs_dims)
 
         if mask is not None:
@@ -149,7 +154,7 @@ class BasicVAE(L.LightningModule):
         metrics['opacity_SNR'] = self.compute_SNR(pred_o, true_o, peak=1.0)
 
         metrics['feature_l1'] = torch.nn.functional.l1_loss(pred_f, true_f).item()
-        metrics['feature_SNR'] = self.compute_SNR(pred_f, true_f)
+        metrics['feature_SNR'] = self.compute_SNR(pred_f, true_f, peak=1.78)
 
         metrics['scale_l1'] = torch.nn.functional.l1_loss(pred_s, true_s).item()
         metrics['scale_SNR'] = self.compute_SNR(pred_s, true_s)

@@ -12,7 +12,7 @@ import torch
 import warnings
 import os
 
-class SVQVAE(BasicVAE):
+class OnlycTransformer(BasicVAE):
     def __init__(
         self,
         gaussian_dim=14, # input dims
@@ -30,38 +30,31 @@ class SVQVAE(BasicVAE):
         # =                           rvq config                           =
         # ==================================================================
         embed_dim = 192,         # vq embed dim
-        n_embed = 4096,          # vq num embeddings
-        embed_levels = 8,        # rvq levels
-        embed_loss_weight = .25, # embed loss weight
-        stochasticity = 0.01,    # stochasticity
+        n_embed = 16384,         # vq num embeddings
+        embed_levels = 2,        # rvq levels
+        embed_loss_weight = 0.2, # embed loss weight
+        stochasticity = 0.1,     # stochasticity
         embed_share = True,      # share embeddings across rvq levels
-        code_decay = 0.99,       # code decay for vq
+        code_decay = 0.9,        # code decay for vq
         kmeans_iters = 100,      # kmeans iterations
         # ==================================================================
         # =                   training data augmentation                   =
         # ==================================================================
         crop_min = None, # crop min length
         crop_max = None, # crop max length
-        # ==================================================================
-        # =                           optimizer                            =
-        # ==================================================================
-        lr = 5e-4,
-        beta1 = 0.7,
-        beta2 = 0.999,
-        weight_decay = 0.0,
     ) -> None:
         super(SVQVAE, self).__init__()
         self.save_hyperparameters()
 
         self.scale_gs = ScaleGaussianSplat()
-        self.sin_encoder = GaussianSinEncoder(sin_dims, True, True, True, True, True)
+        self.sin_encoder = GaussianSinEncoder(sin_dims)
         # combine two gaussian into one token
         input_dim = self.sin_encoder.out_dim*2
         output_dim = gaussian_dim*2
-        self.encoder = resnet34_encoder(input_dim, z_channels)
+        # self.encoder = resnet34_encoder(input_dim, z_channels)
         self.decoder = resnet34_decoder(z_channels, output_dim)
         
-        self.pre_quant = torch.nn.Linear(z_channels, embed_dim)
+        self.pre_quant = torch.nn.Linear(input_dim, embed_dim)
         self.post_quant = torch.nn.Linear(embed_dim, z_channels)
 
         self.sin_position_encoding = SinPositionEncoding(z_channels, max_sequence_length=66536)
@@ -82,8 +75,6 @@ class SVQVAE(BasicVAE):
             stochastic_sample_codes = True,
             sample_codebook_temp = stochasticity,   # temperature for stochastically sampling codes, 0 would be equivalent to non-stochastic
             decay = code_decay,                     # the exponential moving average decay, lower means the dictionary will change faster
-            rotation_trick = True,                  # Set to False to use the STE gradient estimator or True to use the rotation trick.
-            threshold_ema_dead_code = 1,            # should actively replace any codes that have an exponential moving average cluster size less than 1
         )
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
@@ -179,15 +170,15 @@ class SVQVAE(BasicVAE):
 
     # ========================`forward` is only used for training========================
     def forward(self, gaussian, indice):   # -> rec_B3HW, idx_N, loss
-        gaussian = self.scale_gs.forward(gaussian)    
+        gaussian = self.scale_gs.forward(gaussian)
         gaussian = self.sin_encoder(gaussian)
         gaussian = gaussian.flatten(-2, -1)
 
-        embed = self.encoder(gaussian.permute(0, 2, 1))
-        
+        embed = self.pre_quant(gaussian)
+
+        # embed = self.encoder(gaussian.permute(0, 2, 1))
         # pos_embed = self.sin_position_encoding.query(indice)
-        
-        embed = self.pre_quant(embed.permute(0, 2, 1))
+        # embed = self.pre_quant(embed.permute(0, 2, 1) + pos_embed)
 
         f_hat, indices, commit_loss = self.residual_vq(
             embed, freeze_codebook = False if not self.training else True
@@ -231,13 +222,7 @@ class SVQVAE(BasicVAE):
         return output
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(), 
-            amsgrad=True, 
-            lr=self.hparams.lr, 
-            betas=(self.hparams.beta1, self.hparams.beta2), 
-            weight_decay=self.hparams.weight_decay,
-        )
+        optimizer = torch.optim.AdamW(self.parameters(), amsgrad=True, lr=0.0001, weight_decay=0.1)
         
         return {
             "optimizer": optimizer,

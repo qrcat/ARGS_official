@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 
-def merge_gauusian(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, delta=0.2):
+def merge_gaussian(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, delta=0.2):
     o3 = o1+o2-o1*o2
     u3 = (o1*u1+o2*u2)/(o1+o2)
     f3 = (o1*f1+o2*f2)/(o1+o2)

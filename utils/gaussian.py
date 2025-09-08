@@ -15,7 +15,7 @@ def build_sigma(scale, quat):
         sigma = (rotate_matrix @ scales_matrix @ scales_matrix.transpose(-2, -1) @ rotate_matrix.transpose(-2, -1))
         inv_sigma = torch.linalg.inv(sigma)
     elif isinstance(scale, np.ndarray):
-        rotate_matrix = R.from_quat(quat).as_matrix()
+        rotate_matrix = R.from_quat(quat, scalar_first=True).as_matrix()
         scales_matrix = np.zeros_like(rotate_matrix)
 
         scales_matrix[..., 0, 0] = scale[..., 0]
@@ -45,7 +45,8 @@ def unpack_sigma(sigma):
         else:
             mask = np.linalg.det(_Rm) < 0
             _Rm[mask] = -_Rm[mask]
-        _quat = R.from_matrix(_Rm).as_quat()
+        _quat = R.from_matrix(_Rm).as_quat(canonical=True, scalar_first=True)
+        # _quat = norm_quats(_quat)
     else:
         raise TypeError(f"sigma must be torch.Tensor or np.ndarray, but got {type(sigma)}")
 
