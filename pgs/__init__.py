@@ -230,6 +230,7 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
             
             # compute the merged gaussian
             alpha = 0.4 * min(np.log2(self.used_size)/16, 1.0) + 0.6
+            alpha = 1.0
             _xyz3, _opacity3, _feature3, _sigma3, _inv_sigma3 = merge_gaussian_moments(
                 _xyz1, _opacity1, _feature1, _sigma1, _inv_sigma1, 
                 _xyz2, _opacity2, _feature2, _sigma2, _inv_sigma2, 

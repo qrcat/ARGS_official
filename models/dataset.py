@@ -169,6 +169,7 @@ class MergeGaussianDataset(Dataset):
         permute=False,
         max_seq=None,
         load_in_memory=True,
+        return_indices=False,
     ):
         if isinstance(root, str):
             root = Path(root)
@@ -179,6 +180,8 @@ class MergeGaussianDataset(Dataset):
         
         self.permute = permute
         self.max_seq = max_seq
+
+        self.return_indices = return_indices
 
         self.quantize = Quantize()
 
@@ -248,9 +251,12 @@ class MergeGaussianDataset(Dataset):
         if self.max_seq is not None:
             source = source[:self.max_seq]
             target = target[:self.max_seq]
-
-        source = self.quantize(source)
-        target = self.quantize(target)
+        if self.return_indices:
+            source = self.quantize.get_indices(source)
+            target = self.quantize.get_indices(target)
+        else:
+            source = self.quantize(source)
+            target = self.quantize(target)
 
         indice = torch.arange(len(source))
 
@@ -283,6 +289,7 @@ class MergeGaussianDataModule(LightningDataModule):
             shuffle=True,
             train_split=0.99,
             load_in_memory=True,
+            return_indices=False,
         ):
         super().__init__()
 
@@ -293,6 +300,7 @@ class MergeGaussianDataModule(LightningDataModule):
             self.hparams.permute,
             self.hparams.max_seq,
             self.hparams.load_in_memory,
+            self.hparams.return_indices,
         )
 
     def setup(self, stage):
@@ -304,8 +312,12 @@ class MergeGaussianDataModule(LightningDataModule):
             self.predict_dataset = self.dataset
 
     def collate_fn(self, batch):
-        padded_source = torch.nn.utils.rnn.pad_sequence([data[0] for data in batch], batch_first=True)
-        padded_target = torch.nn.utils.rnn.pad_sequence([data[1] for data in batch], batch_first=True)
+        if self.hparams.return_indices:
+            padded_source = torch.nn.utils.rnn.pad_sequence([data[0] for data in batch], batch_first=True, padding_value=256)
+            padded_target = torch.nn.utils.rnn.pad_sequence([data[1] for data in batch], batch_first=True, padding_value=256)
+        else:
+            padded_source = torch.nn.utils.rnn.pad_sequence([data[0] for data in batch], batch_first=True)
+            padded_target = torch.nn.utils.rnn.pad_sequence([data[1] for data in batch], batch_first=True)
         padded_indice = torch.nn.utils.rnn.pad_sequence([data[2] for data in batch], batch_first=True)
         padded_mask = torch.nn.utils.rnn.pad_sequence([torch.ones(data[0].shape[0]) for data in batch], batch_first=True)
 

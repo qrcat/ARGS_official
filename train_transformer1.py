@@ -50,12 +50,13 @@ if __name__ == "__main__":
             train_split=args.train_split,
             num_workers=args.num_workers,
             load_in_memory=args.load_in_memory,
+            return_indices=True,
         )
 
     dataset = init_dataset()
 
     if not args.eval:
-        vqvae = ARGSTransformer()
+        args_model = ARGSTransformer()
     
         checkpoint_callback = ModelCheckpoint(
             every_n_epochs=1,
@@ -69,17 +70,18 @@ if __name__ == "__main__":
             max_epochs=args.max_epochs, 
             log_every_n_steps=1,
             callbacks=[checkpoint_callback],
-            gradient_clip_val=args.gradient_clip_val,
+            # gradient_clip_val=args.gradient_clip_val,
             accumulate_grad_batches=args.accumulate_grad_batches,
             # device
             devices=args.devices,
-            strategy="deepspeed_stage_2", 
-            precision='16-mixed',
+            # precision='16-mixed',
+            strategy="deepspeed_stage_2",
+            precision='bf16-mixed',
         )
-        trainer.fit(vqvae, datamodule=dataset, ckpt_path=args.checkpoint)
+        trainer.fit(args_model, datamodule=dataset, ckpt_path=args.checkpoint)
     else:
-        vqvae = SVQVAE.load_from_checkpoint(args.checkpoint)
-        vqvae.freeze()
+        args_model = ARGSTransformer.load_from_checkpoint(args.checkpoint)
+        args_model.freeze()
 
         trainer = L.Trainer(devices=args.devices)
-        trainer.predict(vqvae, datamodule=dataset)
+        trainer.predict(args_model, datamodule=dataset)

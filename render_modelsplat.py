@@ -5,9 +5,7 @@ from utils.shs import SH2RGB
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-import multiprocessing
 import argparse
-import time
 import shutil
 import os
 import cv2
@@ -36,12 +34,16 @@ items = [
     "bathtub", "bench", "bottle", "car", "cone", "curtain", "door", "flower_pot", "guitar", "lamp", "mantel", "night_stand", "piano", "radio", "sink", "stairs", "table", "toilet", "vase", "xbox"
 ]
 
-shutil.rmtree("output")
+parser = argparse.ArgumentParser()
+parser.add_argument("--modelsplat_ply", type=str, required=True, default="/mnt/private_rqy/gs_data/modelsplat_ply")
+args = parser.parse_args()
+
+# shutil.rmtree("output")
 os.mkdir("output")
 for item in tqdm(items):
     os.mkdir(f"output/{item}")
 
-    pgs = PGSMoments.load(f"/mnt/private_rqy/gs_data/modelsplat_ply/{item}/train/{item}_0001/point_cloud.ply")
+    pgs = PGSMoments.load(os.path.join(args.modelsplat_ply, f"/{item}/train/{item}_0001/point_cloud.ply"))
     for size in [32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1]:
         if os.path.exists(f"output/{item}/zip-{size:06d}.ply"):
             continue

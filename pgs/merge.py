@@ -110,7 +110,8 @@ def merge_gaussian_moments(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, alpha
         s3 = (s3 + s3.T) / 2
         s3 = s3 if torch.det(s3) > 0 else -s3
     elif isinstance(u1, np.ndarray):
-        inv_s3 = (np.linalg.inv(s1) * o1 + np.linalg.inv(s2) * o2) / (o1+o2) / 2 / alpha * np.exp(-delta*np.linalg.norm(u1-u2)) 
+        # inv_s3 = (np.linalg.inv(s1) * o1 + np.linalg.inv(s2) * o2) / (o1+o2) / 2 / alpha * np.exp(-delta*np.linalg.norm(u1-u2)) 
+        inv_s3 = (np.linalg.inv(s1) * o1 + np.linalg.inv(s2) * o2) / (o1+o2) / 2
         try:
             s3 = np.linalg.solve(inv_s3, np.eye(s1.shape[0]))
         except np.linalg.LinAlgError:

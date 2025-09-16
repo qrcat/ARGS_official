@@ -10,7 +10,7 @@ import time
 import shutil
 import os
 import cv2
-from utils.render import camera_matrix_from_angles_y
+from utils.render import camera_matrix_from_angles
 from pathlib import Path
 from tqdm import tqdm
 from utils.io import get_combinable_gaussian, activated_gs2gs, activated_gs2train_gs, gs2activated_gs, save_ply, load_ply
@@ -27,7 +27,11 @@ def load_ply_torch(path: str):
     return xyz, opacities, features_dc, scales, rots
 
 
-item = 'bird'
+parser = argparse.ArgumentParser()
+parser.add_argument('--path', type=str, required=True, default="/mnt/private_rqy/gs_data/modelsplat_ply/airplane/train/airplane_0001/point_cloud.ply")
+args = parser.parse_args()
+
+item = Path(args.path).stem
 path = Path(f'output/{item}')
 path.mkdir(exist_ok=True)
 
@@ -50,7 +54,7 @@ _level = 14
 _sizes = 2**np.arange(0, _level+1)
 _thres = np.cumsum(_sizes*32)
 # load data
-pgs = PGSMoments.load("gradio_output.ply")
+pgs = PGSMoments.load(args.path)
 # get init scales
 for i in range(_level):
     if pgs.used_size < _thres[i]:
@@ -75,7 +79,7 @@ while pgs.used_size > 1:
     features_dc = SH2RGB(features_dc)
     azi = (azi+10) % 360
     # get camera matrix
-    view_mat = np.linalg.inv(camera_matrix_from_angles_y(azi/180*np.pi, ele/180*np.pi, 1.4, np.array([0.0, -1.0, 0.0])))
+    view_mat = np.linalg.inv(camera_matrix_from_angles(azi/180*np.pi, ele/180*np.pi, 1.4, np.array([0.0, -1.0, 0.0])))
     viewmats = torch.tensor(view_mat.tolist(), device='cuda')[None]
     # render
     output = gsplat.rasterization(xyz, rots, scales, opacities[:, 0], features_dc, viewmats, Ks, width, height)

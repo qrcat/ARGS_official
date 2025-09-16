@@ -77,7 +77,7 @@ class Quantize:
         return o_indices / (self.o_grid_nums-1)
 
     def _quantize_f(self, features_dc):
-        return _round((features_dc * self.C0 + 0.5) * (self.f_grid_nums-1))
+        return _round((features_dc * self.C0 + 0.5).clip(0, 1) * (self.f_grid_nums-1))
     
     def _dequantize_f(self, f_indices):
         return (f_indices / (self.f_grid_nums-1) - 0.5)/ self.C0
@@ -136,6 +136,21 @@ class Quantize:
             return x
         else:
             return x, o, f, s, q
+
+    @torch.no_grad()
+    def get_indices(self, x, o=None, f=None, s=None, q=None):
+        if x is not None and o is None and f is None and s is None and q is None:
+            x, o, f, s, q = _split(x, [3, 1, 3, 3, 4], axis=-1)
+            merge = True
+        else:
+            merge = False
+        x_indices, o_indices, f_indices, s_indices, q_indices = self.quantize(x, o, f, s, q)
+        
+        if merge:
+            x = _concat(x_indices, o_indices, f_indices, s_indices, q_indices)
+            return x
+        else:
+            return x_indices, o_indices, f_indices, s_indices, q_indices
     
 if __name__ == '__main__':
     quantize = Quantize()

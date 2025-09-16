@@ -1,4 +1,5 @@
 
+import argparse
 from utils.io import activated_gs2gs, gs2activated_gs, save_ply, load_ply
 from utils.shs import RGB2SH, SH2RGB
 from utils.gaussian import norm_quats
@@ -266,6 +267,15 @@ def enhance_gaussian_field(path: str, save: str, augment: Augment, prob=0.5, upa
     xyz, opacities, features_dc, scales, rots = activated_gs2gs(xyz, opacities, features_dc, scales, rots)
     save_ply(save, xyz, opacities, features_dc, scales, rots)
 
-augment = Augment()
-# for shapesplat and modelsplat, upaxis = 3
-enhance_gaussian_field('03636649-cfaf30102d9b7cc6cd6d67789347621.ply', '03636649-enhance.ply', augment)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', type=str, default='03636649-cfaf30102d9b7cc6cd6d67789347621.ply')
+    parser.add_argument('--output', type=str, default='03636649-enhance.ply')
+    args = parser.parse_args()
+    
+    augment = Augment()
+    
+    # for shapesplat and modelsplat, upaxis = 3
+    enhance_gaussian_field(args.input, args.output, augment)

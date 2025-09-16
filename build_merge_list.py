@@ -12,9 +12,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--shapesplat_ply", default="/mnt/private_rqy/gs_data/shapesplat_ply")
 parser.add_argument("--modelsplat_ply", default="/mnt/private_rqy/gs_data/modelsplat_ply")
 # outputs
-parser.add_argument("--output", default="/mnt/private_rqy/gs_data/merge")
+parser.add_argument("--output", default="/apdcephfs/share_303772734/rqy/gs_merge/")
 # workers
-parser.add_argument("--workers", type=int, default=16)
+parser.add_argument("--workers", type=int, default=32)
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 from .basic import ScaleGaussianSplat
 from .sin_encoder import GaussianSinEncoder, SinPositionEncoding
+from utils.quantize import Quantize
 from utils.general import accuracy, top_p_sampling
 import math
 
@@ -41,21 +42,17 @@ class ARGSTransformer(L.LightningModule):
 
         self.save_hyperparameters()
         
-        sin_dims = 16
-        self.scale_gs = ScaleGaussianSplat()
-        self.sin_encoder = GaussianSinEncoder(sin_dims, True, True, True, True, embed_q=False)
-        
-        # embed the first token
-        self.first_layer = nn.Linear(self.sin_encoder.out_dim, n_embd)
-        # embed the other token
-        self.input_layer = nn.Linear(self.sin_encoder.out_dim*gs_nums, n_embd)
+        self.quantize = Quantize()
+
+        self.embedding_table = nn.ModuleList([nn.Embedding(256+1, n_embd, padding_idx=256) for _ in range(14)])
+
         self.transformer = nn.ModuleDict(dict(
-            wpe=nn.Embedding(block_size, n_embd),
+            wpe=SinPositionEncoding(n_embd, block_size),
             drop=nn.Dropout(dropout),
             h=nn.ModuleList([Block(bias, block_size, dropout, n_embd, n_head) for _ in range(n_layer)]),
             ln_f=LayerNorm(n_embd, bias=bias),
         ))
-        self.lm_head = nn.Linear(n_embd, gs_dims*gs_nums, bias=False)
+        self.lm_head = nn.Linear(n_embd, gs_nums*gs_dims*256, bias=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -67,33 +64,15 @@ class ARGSTransformer(L.LightningModule):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
-        self.pos_act = lambda x: torch.tanh(x)
-        self.opa_act = lambda x: torch.sigmoid(x)
-        self.scl_act = lambda x: 0.1 * F.softplus(x)
-        self.rot_act = lambda x, dim: F.normalize(x, dim=dim)
-
     def training_step(self, batch, batch_idx):
         source, target, indice, bhmask = batch
-        
-        pred = self(target[:, :1], source, indice)
 
-        loss_x = torch.nn.functional.l1_loss(self.pos_act(pred[..., :3]), source[..., :3]) * 2
-        loss_o = torch.nn.functional.l1_loss(self.opa_act(pred[..., 3:4]), source[..., 3:4]) * 1.5
-        loss_f = torch.nn.functional.l1_loss(pred[..., 4:7], source[..., 4:7].clip(min=-1.772453850905516, max=1.772453850905516)) / 1.772453850905516
-        loss_s = torch.nn.functional.l1_loss(self.scl_act(pred[..., 7:10]), source[..., 7:10]) * 10
+        pred = self(target, source, indice)
         
-        dot_product = torch.sum(self.rot_act(pred[..., 10:], dim=-1) * source[..., 10:], dim=-1).abs()
-        loss_q = 1 - dot_product.mean()
-
-        loss = loss_x + loss_o + loss_f + loss_s + loss_q
+        loss = torch.nn.functional.cross_entropy(pred.permute(0, -1, 1, 2, 3), source, ignore_index=256)
 
         self.log_dict({
-            'loss/train_loss': loss,
-            'loss/loss_x': loss_x,
-            'loss/loss_o': loss_o,
-            'loss/loss_f': loss_f,
-            'loss/loss_s': loss_s,
-            'loss/loss_q': loss_q,
+            'loss/train_loss': loss.item(),
         })
 
         return loss
@@ -110,17 +89,15 @@ class ARGSTransformer(L.LightningModule):
         source, target, indice, mask = batch
         
         pred = self(target[:, :1], source, indice)
+        pred = torch.argmax(pred, dim=-1)
 
-        true_x, true_o, true_f, true_s, true_q = source.split([3, 1, 3, 3, 4], dim=-1)
         # prepare the predict
         pred_x, pred_o, pred_f, pred_s, pred_q = pred.split([3, 1, 3, 3, 4], dim=-1)
+        pred_x, pred_o, pred_f, pred_s, pred_q = self.quantize.dequantize(pred_x, pred_o, pred_f, pred_s, pred_q)
+        # prepare the ground truth
+        true_x, true_o, true_f, true_s, true_q = source.split([3, 1, 3, 3, 4], dim=-1)
+        true_x, true_o, true_f, true_s, true_q = self.quantize.dequantize(true_x, true_o, true_f, true_s, true_q)
         
-        pred_x = self.pos_act(pred_x)
-        pred_o = self.opa_act(pred_o)
-        pred_f = pred_f
-        pred_s = self.scl_act(pred_s)
-        pred_q = self.rot_act(pred_q, dim=-1)
-
         pred_x = pred_x[mask]
         pred_o = pred_o[mask]
         pred_f = pred_f[mask]
@@ -159,17 +136,14 @@ class ARGSTransformer(L.LightningModule):
         b, t = indice.shape
         assert t <= self.hparams.block_size, f"Cannot forward sequence of length {t}, block size is only {self.hparams.block_size}"
 
-        init = self.scale_gs.forward(init)
-        init = self.sin_encoder(init)
-        tok_fst = self.first_layer(init)
+        tok_fst = 0  # 初始化为0
+        tok_app = 0
+        for dim in range(14):
+            tok_fst += self.embedding_table[dim](init[:, :1, dim])
+            tok_app += self.embedding_table[dim](gaussian[:, :-1, 0, dim]) + self.embedding_table[dim](gaussian[:, :-1, 1, dim])
 
-        gaussian = self.scale_gs.forward(gaussian[:, :-1])    
-        gaussian = self.sin_encoder(gaussian)
-        gaussian = gaussian.flatten(-2, -1)
-        tok_app = self.input_layer(gaussian)
+        tok_emb = torch.cat([tok_fst*2.0, tok_app], dim=1)
 
-        tok_emb = torch.cat([tok_fst, tok_app], dim=1)
-        
         # position embedding
         if kv_cache is not None and kv_cache[0].numel():
             pos = kv_cache[0].shape[-2]  # kv_cache of shape: num_layers * (2, B, nh, T, hs)
@@ -177,7 +151,7 @@ class ARGSTransformer(L.LightningModule):
             mask = mask_cache.index_select(2, torch.LongTensor([pos]).to(pos_emb.device))[:, :, :, :pos + 1]
         else:
             pos = torch.tensor([i for i in range(t)], dtype=torch.long, device=device)
-            pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
+            pos_emb = self.transformer.wpe.query(pos)  # position embeddings of shape (t, n_embd)
             mask = None
 
         sum_emb = tok_emb + pos_emb[None]
@@ -196,7 +170,7 @@ class ARGSTransformer(L.LightningModule):
 
         output = self.lm_head(x)
 
-        return output.view(b, t, self.hparams.gs_nums, self.hparams.gs_dims)
+        return output.view(b, t, self.hparams.gs_nums, self.hparams.gs_dims, 256)
 
 
     @torch.no_grad()
