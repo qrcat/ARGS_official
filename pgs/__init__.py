@@ -257,8 +257,11 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
 
             merge_list.append({
                 "source": np.concatenate([_xyz1, _opacity1, _feature1, _scale1, _quat1]),
+                "source_id": _index1,
                 "target": np.concatenate([_xyz2, _opacity2, _feature2, _scale2, _quat2]),
+                "target_id": _index2,
                 "mixed": np.concatenate([_xyz3, _opacity3, _feature3, _scale3, _quat3]),
+                "mixed_id": _index3,
             })
 
             update_index_set = set([_index3] + _index.tolist() + _neighbor.tolist())
