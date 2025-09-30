@@ -1,5 +1,6 @@
 import copy
 from utils.io import activated_gs2gs, save_ply
+from utils.quaternion import quaternion_multiply
 from pgs import PGSMoments
 import numpy as np
 
@@ -81,6 +82,24 @@ new_gs_local[..., :3] = new_gs_gt[..., :3] - now_gs_split[..., None, :3]
 ...# feature->Δfeature                                              | M, 2, 3
 ...# scale  ->Δscale                                                | M, 2, 3
 ...# quat   ->Δquat                                                 | M, 2, 4
+from scipy.spatial.transform import Rotation
+
+now_gs_quat = Rotation.from_quat(now_gs_split[..., -4:], scalar_first=True) # Attention: scalar_first must be true
+new_gs_quat1 = Rotation.from_quat(new_gs_gt[..., 0, -4:], scalar_first=True)
+new_gs_quat2 = Rotation.from_quat(new_gs_gt[..., 1, -4:], scalar_first=True)
+
+# now_gs_quat * new_gs_quat1_local = new_gs_quat1
+new_gs_quat1_local = now_gs_quat.inv() *  new_gs_quat1
+new_gs_quat2_local = now_gs_quat.inv() *  new_gs_quat2
+assert np.allclose((now_gs_quat*new_gs_quat1_local).as_quat(scalar_first=True), new_gs_quat1.as_quat(scalar_first=True))
+assert np.allclose((now_gs_quat*new_gs_quat2_local).as_quat(scalar_first=True), new_gs_quat2.as_quat(scalar_first=True))
+
+# thus
+new_gs_local[..., 0, -4:] = torch.from_numpy(new_gs_quat1_local.as_quat(scalar_first=True)).float()
+new_gs_local[..., 1, -4:] = torch.from_numpy(new_gs_quat2_local.as_quat(scalar_first=True)).float()
+# 推理的时候就用下面这个
+assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 0, -4:]), new_gs_gt[..., 0, -4:])
+assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 1, -4:]), new_gs_gt[..., 1, -4:])
 
 new_gs_pred = dense_head(features[next_gs_split]).view(-1, 2, 14) # 获得要分裂的点
 loss_func(new_gs_pred, new_gs_local) # M, 2, 14
@@ -102,6 +121,11 @@ new_gs_pred_global = torch.zeros_like(new_gs_pred)
 new_gs_pred_global[..., :3] = now_gs_split[..., None, :3] + new_gs_pred[..., :3]
 ...# Δopacity->opacity                                              | M, 2, 1
 ...# ...
+...# Δquat   ->quat                                                 | M, 2, 4
+# 这里处理四元数乘法
+# now_gs_quat * new_gs_quat1_local = new_gs_quat1
+new_gs_quat1_local = ...
+new_gs_quat1 = quaternion_multiply(now_gs_quat, new_gs_quat1_local)
 
 # 不保留那些分裂的gs
 now_gs = now_gs[~torch.squeeze(split_mask)>0]
