@@ -1,7 +1,8 @@
 import copy
 from utils.io import activated_gs2gs, save_ply
-from utils.quaternion import quaternion_multiply
+from utils.quaternion import quaternion_multiply, normalize_quaternions
 from pgs import PGSMoments
+from scipy.spatial.transform import Rotation
 import numpy as np
 
 pgs = PGSMoments.load("point_cloud.ply")
@@ -51,10 +52,10 @@ with open('data.pkl', 'rb') as f:
 import torch
 import torch.nn as nn
 
-pointnet = ... # 使用pointnet提取特征
-split_head = nn.Linear(..., 1) # 获得分裂结果
-dense_head = nn.Linear(..., 2*14) # 获得两个生成的高斯
-loss_func = ... # 监督生成高斯的损失函数
+pointnet   = nn.Linear(14, 256)   # 使用pointnet提取特征
+split_head = nn.Linear(256, 1)    # 获得分裂结果
+dense_head = nn.Linear(256, 2*14) # 获得两个生成的高斯
+loss_func  = nn.MSELoss()         # 监督生成高斯的损失函数
 
 
 level = np.random.randint(0, output_back['level']) # 随机选一层
@@ -70,39 +71,40 @@ save_ply('test.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..
 features = pointnet(now_gs) # B, C
 
 # 分类损失函数
-torch.nn.functional.binary_cross_entropy_with_logits(split_head(features), next_gs_split.float())
-# 生成高斯监督
+torch.nn.functional.binary_cross_entropy_with_logits(split_head(features), torch.tensor(next_gs_split).float()[..., None])
+# 生成局部高斯作为监督
 now_gs_split = now_gs[next_gs_split].clone() # M, 14
 new_gs_gt = torch.from_numpy(output_back['data'][next_gs_index]).clone() # M, 2, 14
 # 计算新gs的local特征
 new_gs_local = torch.zeros_like(new_gs_gt)
-...# x,y,z  ->Δx,Δy,Δz                                              | M, 2, 3
+# x,y,z  ->Δx,Δy,Δz                                              | M, 2, 3
 new_gs_local[..., :3] = new_gs_gt[..., :3] - now_gs_split[..., None, :3] 
-...# opacity->Δopacity                                              | M, 2, 1
-...# feature->Δfeature                                              | M, 2, 3
-...# scale  ->Δscale                                                | M, 2, 3
-...# quat   ->Δquat                                                 | M, 2, 4
-from scipy.spatial.transform import Rotation
-
+# opacity->Δopacity                                              | M, 2, 1
+new_gs_local[..., 3:4] = new_gs_gt[..., 3:4] / now_gs_split[..., None, 3:4] # 可能是除法？
+# feature->Δfeature                                              | M, 2, 3
+new_gs_local[..., 4:7] = new_gs_gt[..., 4:7] - now_gs_split[..., None, 4:7] # 可能是加法？
+# scale  ->Δscale                                                | M, 2, 3
+...
+# quat   ->Δquat                                                 | M, 2, 4
 now_gs_quat = Rotation.from_quat(now_gs_split[..., -4:], scalar_first=True) # Attention: scalar_first must be true
 new_gs_quat1 = Rotation.from_quat(new_gs_gt[..., 0, -4:], scalar_first=True)
 new_gs_quat2 = Rotation.from_quat(new_gs_gt[..., 1, -4:], scalar_first=True)
-
 # now_gs_quat * new_gs_quat1_local = new_gs_quat1
 new_gs_quat1_local = now_gs_quat.inv() *  new_gs_quat1
 new_gs_quat2_local = now_gs_quat.inv() *  new_gs_quat2
+
 assert np.allclose((now_gs_quat*new_gs_quat1_local).as_quat(scalar_first=True), new_gs_quat1.as_quat(scalar_first=True))
 assert np.allclose((now_gs_quat*new_gs_quat2_local).as_quat(scalar_first=True), new_gs_quat2.as_quat(scalar_first=True))
 
-# thus
 new_gs_local[..., 0, -4:] = torch.from_numpy(new_gs_quat1_local.as_quat(scalar_first=True)).float()
 new_gs_local[..., 1, -4:] = torch.from_numpy(new_gs_quat2_local.as_quat(scalar_first=True)).float()
-# 推理的时候就用下面这个
+
 assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 0, -4:]), new_gs_gt[..., 0, -4:])
 assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 1, -4:]), new_gs_gt[..., 1, -4:])
 
 new_gs_pred = dense_head(features[next_gs_split]).view(-1, 2, 14) # 获得要分裂的点
 loss_func(new_gs_pred, new_gs_local) # M, 2, 14
+
 # ===================================================================================================
 # = 推理时                                                                                          =
 # ===================================================================================================
@@ -114,21 +116,23 @@ split_mask = split_head(features) # N, 1
 # 获得分裂gs
 now_gs_split = now_gs[torch.squeeze(split_mask)>0].clone() # M', 14
 # 获得分裂后的gs
-new_gs_pred = dense_head(features[next_gs_split]).view(-1, 2, 14) # M', 2, 14
+new_gs_pred = dense_head(features[torch.squeeze(split_mask)>0]).view(-1, 2, 14) # M', 2, 14
 # 将这些local的gs变成global的
 new_gs_pred_global = torch.zeros_like(new_gs_pred)
-...# Δx,Δy,Δz->x,y,z                                                | M, 2, 3
+# Δx,Δy,Δz ->x,y,z                                                | M, 2, 3
 new_gs_pred_global[..., :3] = now_gs_split[..., None, :3] + new_gs_pred[..., :3]
-...# Δopacity->opacity                                              | M, 2, 1
-...# ...
-...# Δquat   ->quat                                                 | M, 2, 4
-# 这里处理四元数乘法
-# now_gs_quat * new_gs_quat1_local = new_gs_quat1
-new_gs_quat1_local = ...
-new_gs_quat1 = quaternion_multiply(now_gs_quat, new_gs_quat1_local)
+# Δopacity ->opacity                                              | M, 2, 1
+new_gs_pred_global[..., 3:4] = now_gs_split[..., None, 3:4] * new_gs_pred[..., 3:4]
+# Δfeature ->feature                                              | M, 2, 3
+new_gs_pred_global[..., 4:7] = now_gs_split[..., None, 4:7] + new_gs_pred[..., 4:7]
+# Δscale   ->scale                                                | M, 2, 3
+...
+# Δquat    ->quat                                                 | M, 2, 4
+new_gs_pred_global[..., 0, -4:] = quaternion_multiply(now_gs_split[..., -4:],  normalize_quaternions(new_gs_pred[..., 0, -4:]))
+new_gs_pred_global[..., 1, -4:] = quaternion_multiply(now_gs_split[..., -4:],  normalize_quaternions(new_gs_pred[..., 1, -4:]))
 
 # 不保留那些分裂的gs
-now_gs = now_gs[~torch.squeeze(split_mask)>0]
+now_gs = now_gs[~(torch.squeeze(split_mask)>0)]
 # 将分裂gs展平
 new_gs_pred_global = new_gs_pred_global.view(-1, 14) # 2xM', 14
 # 拼接
