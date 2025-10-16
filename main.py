@@ -1,6 +1,7 @@
 from utils.quaternion import quaternion_multiply, quaternion_inverse, normalize_quaternions
 import sonata
 import torch
+import torch.nn as nn
 import numpy as np
 
 
@@ -38,8 +39,8 @@ import pickle
 with open('data.pkl', 'rb') as f:
     output_back = pickle.load(f)
 
-split_head = torch.nn.Linear(1088, 1)
-dense_head = torch.nn.Linear(1088, 2*14)
+split_head = nn.Sequential(nn.Linear(1088, 512), nn.LeakyReLU(), nn.Linear(512, 1))
+dense_head = nn.Sequential(nn.Linear(1088, 512), nn.LeakyReLU(), nn.Linear(512, 2*14))
 split_head.cuda()
 dense_head.cuda()
 
