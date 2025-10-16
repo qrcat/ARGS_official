@@ -165,3 +165,11 @@ def quaternion_multiply(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
     ab = quaternion_raw_multiply(a, b)
     return standardize_quaternion(ab)
+
+def quaternion_inverse(q: torch.Tensor) -> torch.Tensor:
+    """Assume q is (..,4) scalar-first (w,x,y,z). If normalized, inverse = conjugate."""
+    wxyz = q.clone()
+    wxyz[..., 1:] = -wxyz[..., 1:]
+    # If not unit, divide by squared norm (rare; we normalize elsewhere anyway)
+    denom = (q * q).sum(dim=-1, keepdim=True)
+    return wxyz / torch.clamp(denom, min=1e-8)

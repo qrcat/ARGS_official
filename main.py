@@ -1,6 +1,8 @@
+from utils.quaternion import quaternion_multiply, quaternion_inverse, normalize_quaternions
 import sonata
 import torch
 import numpy as np
+
 
 
 config = [
@@ -41,15 +43,64 @@ dense_head = torch.nn.Linear(1088, 2*14)
 split_head.cuda()
 dense_head.cuda()
 
-opt = torch.optim.AdamW(list(model.parameters())+list(split_head.parameters())+list(dense_head.parameters()), lr=1e-4)
+opt = torch.optim.AdamW([
+    {
+        'params': model.parameters(),
+        'lr': 1e-5,
+    },
+    {
+        'params': split_head.parameters(),
+        'lr': 1e-3,
+    },
+    {
+        'params': dense_head.parameters(),
+        'lr': 1e-3,
+    },
+])
 
-for epoch in range(1000):
+# ===========================
+# Local/Global transforms
+# ===========================
+def to_local(parent: torch.Tensor, children: torch.Tensor) -> torch.Tensor:
+    """
+    parent:   (M, 14)
+    children: (M, 2, 14)
+    return:   (M, 2, 14)  order:
+      Δpos(3), Δopacity(ratio)(1), Δfeat(3), Δscale(log ratio)(3), Δquat(relative)(4)
+    """
+    eps = 1e-6
+    local = torch.zeros_like(children)
+
+    # Δpos
+    local[..., :3] = children[..., :3] - parent[:, None, :3]
+    # Δopacity (ratio)
+    p_op = torch.clamp(parent[:, 3:4], min=eps)
+    c_op = torch.clamp(children[..., 3:4], min=eps)
+    local[..., 3:4] = c_op / p_op[:, None, :]
+    # Δfeature (difference)
+    local[..., 4:7] = children[..., 4:7] - parent[:, None, 4:7]
+    # Δscale = log(child/parent)
+    p_s = torch.clamp(parent[:, 7:10], min=eps)
+    c_s = torch.clamp(children[..., 7:10], min=eps)
+    local[..., 7:10] = torch.log(c_s / p_s[:, None, :])
+    # Δquat = q_parent^{-1} ⊗ q_child
+    q_parent = normalize_quaternions(parent[:, -4:])
+    q_child0 = normalize_quaternions(children[:, 0, -4:])
+    q_child1 = normalize_quaternions(children[:, 1, -4:])
+    q_local0 = quaternion_multiply(quaternion_inverse(q_parent), q_child0)
+    q_local1 = quaternion_multiply(quaternion_inverse(q_parent), q_child1)
+    local[:, 0, -4:] = normalize_quaternions(q_local0)
+    local[:, 1, -4:] = normalize_quaternions(q_local1)
+    return local
+
+for epoch in range(10000):
     print(epoch)
     for level in range(output_back['level']-20):
         now_gs_index, next_gs_split, next_gs_index = output_back[level]
 
         now_gs = torch.from_numpy(output_back['data'][now_gs_index]).float()
-        new_gs_gt = torch.from_numpy(output_back['data'][next_gs_index]).float().cuda()
+        new_gs_gt = torch.from_numpy(output_back['data'][next_gs_index]).float()
+        new_gs = to_local(now_gs[next_gs_split], new_gs_gt)
         # breakpoint()
         point = {
             "coord": np.array(now_gs[...,  :3]),  # (N, 3) 3postion
@@ -79,12 +130,12 @@ for epoch in range(1000):
         feat = point.feat[point.inverse]
 
         loss_bce = torch.nn.functional.binary_cross_entropy_with_logits(split_head(feat), torch.tensor(next_gs_split).float().cuda()[..., None])
-        loss_mse = torch.nn.functional.mse_loss(dense_head(feat[next_gs_split]).view(-1, 2, 14), new_gs_gt)
+        loss_mse = torch.nn.functional.mse_loss(dense_head(feat[next_gs_split]).view(-1, 2, 14), new_gs.cuda())
 
         loss = loss_bce+loss_mse
         loss.backward()
 
-        print(level, loss_bce.item(), loss_mse.item())
+        print('{:02d} d{:.02f}% bce:{:.03f} mse:{:.03f}'.format(level, np.sum(next_gs_split)/len(next_gs_split)*100, loss_bce.item(), loss_mse.item()))
 
     opt.step()
     opt.zero_grad()
