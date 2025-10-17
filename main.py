@@ -10,7 +10,7 @@ config = [
     # dict(type="CenterShift", apply_z=True),
     dict(
         type="GridSample",
-        grid_size=0.02,
+        grid_size=1/256,
         hash_type="fnv",
         mode="train",
         return_grid_coord=True,
@@ -29,18 +29,20 @@ transform = sonata.transform.Compose(config)
 custom_config = dict(
     enc_patch_size=[1024 for _ in range(5)],
     enable_flash=False,  # reduce patch size if necessary
+    # freeze_encoder=True,
+    enc_mode=False,
 )
 model = sonata.load("sonata", repo_id="facebook/sonata", custom_config=custom_config).cuda()
 model.embedding.stem.linear = torch.nn.Linear(14, out_features=48, bias=True)
 model.embedding.stem.linear.cuda()
-
+# breakpoint()
 import pickle
 # 读取这个文件
 with open('data.pkl', 'rb') as f:
     output_back = pickle.load(f)
 
-split_head = nn.Sequential(nn.Linear(1088, 512), nn.LeakyReLU(), nn.Linear(512, 1))
-dense_head = nn.Sequential(nn.Linear(1088, 512), nn.LeakyReLU(), nn.Linear(512, 2*14))
+split_head = nn.Sequential(nn.Linear(96, 96), nn.LeakyReLU(), nn.Linear(96, 1))
+dense_head = nn.Sequential(nn.Linear(96, 96), nn.LeakyReLU(), nn.Linear(96, 2*14))
 split_head.cuda()
 dense_head.cuda()
 
@@ -110,33 +112,41 @@ for epoch in range(10000):
         }
 
         point = transform(point)
+        
         for key in point.keys():
             if isinstance(point[key], torch.Tensor):
                 point[key] = point[key].cuda(non_blocking=True)
 
         point = model(point)
-        for _ in range(2):
-            assert "pooling_parent" in point.keys()
-            assert "pooling_inverse" in point.keys()
-            parent = point.pop("pooling_parent")
-            inverse = point.pop("pooling_inverse")
-            parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
-            point = parent
-        while "pooling_parent" in point.keys():
-            assert "pooling_inverse" in point.keys()
-            parent = point.pop("pooling_parent")
-            inverse = point.pop("pooling_inverse")
-            parent.feat = point.feat[inverse]
-            point = parent
+        # breakpoint()
+        
+        # for _ in range(2):
+        #     assert "pooling_parent" in point.keys()
+        #     assert "pooling_inverse" in point.keys()
+        #     parent = point.pop("pooling_parent")
+        #     inverse = point.pop("pooling_inverse")
+        #     parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+        #     point = parent
+        # while "pooling_parent" in point.keys():
+        #     assert "pooling_inverse" in point.keys()
+        #     parent = point.pop("pooling_parent")
+        #     inverse = point.pop("pooling_inverse")
+        #     parent.feat = point.feat[inverse]
+        #     point = parent
+
+        # some bugs of point.inverses, that means some point are merge
         feat = point.feat[point.inverse]
 
-        loss_bce = torch.nn.functional.binary_cross_entropy_with_logits(split_head(feat), torch.tensor(next_gs_split).float().cuda()[..., None])
+        distrib = np.sum(next_gs_split)/len(next_gs_split)*100
+        # breakpoint()
+
+        loss_bce = torch.nn.functional.binary_cross_entropy_with_logits(split_head(feat), torch.tensor(next_gs_split).float().cuda()[..., None], weight=torch.tensor([np.exp(-np.abs(distrib-50)/100)]).float().cuda())
         loss_mse = torch.nn.functional.mse_loss(dense_head(feat[next_gs_split]).view(-1, 2, 14), new_gs.cuda())
 
         loss = loss_bce+loss_mse
         loss.backward()
 
-        print('{:02d} d{:.02f}% bce:{:.03f} mse:{:.03f}'.format(level, np.sum(next_gs_split)/len(next_gs_split)*100, loss_bce.item(), loss_mse.item()))
+        print('{:02d} d{:.02f}% bce:{:.03f} mse:{:.03f}'.format(level, distrib, loss_bce.item(), loss_mse.item()))
 
     opt.step()
     opt.zero_grad()
