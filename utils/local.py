@@ -25,7 +25,7 @@ def to_local(parent: torch.Tensor, children: torch.Tensor) -> torch.Tensor:
     # Δscale = log(child/parent)
     p_s = torch.clamp(parent[:, 7:10], min=eps)
     c_s = torch.clamp(children[..., 7:10], min=eps)
-    local[..., 7:10] = torch.log(c_s / p_s[:, None, :])
+    local[..., 7:10] = torch.log(c_s) - torch.log(p_s[:, None, :])
     # Δquat = q_parent^{-1} ⊗ q_child
     q_parent = normalize_quaternions(parent[:, -4:])
     q_child0 = normalize_quaternions(children[:, 0, -4:])
@@ -50,7 +50,7 @@ def to_global(parent: torch.Tensor, local: torch.Tensor) -> torch.Tensor:
     # feature
     out[..., 4:7] = parent[:, None, 4:7] + local[..., 4:7]
     # scale = parent * exp(Δ)
-    out[..., 7:10] = parent[:, None, 7:10] * torch.exp(local[..., 7:10])
+    out[..., 7:10] = torch.exp(local[..., 7:10] + torch.log(parent[:, None, 7:10]))
     # quat = q_parent ⊗ Δq
     q_parent = normalize_quaternions(parent[:, -4:])
     q_loc0 = normalize_quaternions(local[:, 0, -4:])
