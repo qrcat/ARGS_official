@@ -10,3 +10,6 @@ events.*
 # dataset
 datasets
 output
+
+data/
+ckpt/

@@ -1,3 +1,18 @@
+# install 
+```
+# https://pytorch.org/get-started/previous-versions/
+
+pip install spconv-cu${CUDA_VERSION}
+pip install torch-scatter -f https://data.pyg.org/whl/torch-{TORCH_VERSION}+cu${CUDA_VERSION}.html
+pip install git+https://github.com/Dao-AILab/flash-attention.git
+pip install huggingface_hub timm
+
+conda install -c pytorch faiss-cpu=1.12.0
+```
+
+```
+pip install lightning
+```
 
 # 生成数据
 

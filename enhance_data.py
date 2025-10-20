@@ -5,7 +5,7 @@ from utils.shs import RGB2SH, SH2RGB
 from utils.gaussian import norm_quats
 
 from torchvision.transforms import ColorJitter
-from pytorch3d.transforms import quaternion_multiply, matrix_to_quaternion, quaternion_to_matrix
+from utils.quaternion import quaternion_multiply, matrix_to_quaternion, quaternion_to_matrix
 
 import numpy as np
 import torch
@@ -278,4 +278,5 @@ if __name__ == '__main__':
     augment = Augment()
     
     # for shapesplat and modelsplat, upaxis = 3
-    enhance_gaussian_field(args.input, args.output, augment)
+    for i in range(100):
+        enhance_gaussian_field(args.input, f'{args.output}-{i}.ply', augment)

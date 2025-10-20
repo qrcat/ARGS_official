@@ -1,39 +1,57 @@
 import copy
 from utils.io import activated_gs2gs, save_ply
 from utils.quaternion import quaternion_multiply, normalize_quaternions
-from pgs import PGSMoments
+from pgs import PGSMoments, PGSMomentSample
 from scipy.spatial.transform import Rotation
 import numpy as np
 
 pgs = PGSMoments.load("point_cloud.ply")
+# pgs = PGSMomentSample.load("point_cloud.ply")
 merge_list = pgs.simplify(1)
 merge_list = merge_list[::-1]
 # 建立分裂的连接关系
 tmap = {}
 for merge in merge_list:
-    tmap[merge['mixed_id']] = [merge['source_id'], merge['target_id']]
+    tmap[merge['mixed_id']] = [i if isinstance(i, int) else i.item() for i in [merge['source_id'], merge['target_id']]]
+
 root = merge_list[0]['mixed_id']
 # 获得分层的GS
 level = 0
 output = {}
-now_gs_index = [root]
+level_step_no_split, level_step_to_split = [], [root]
 while True:
-    next_gs_index = []
-    next_gs_split = []
-    for index in now_gs_index:
+    level_step_split_mask = []
+    level_next_no_split, level_next_to_split = [], []
+
+    for index in level_step_to_split:
         if tmap.get(index):
-            next_gs_index.append(tmap[index][0])
-            next_gs_index.append(tmap[index][1])
-            next_gs_split.append(True)
+            level_next_to_split.append(tmap[index][0])
+            level_next_to_split.append(tmap[index][1])
+
+            level_step_split_mask.append(True)
         else:
-            next_gs_index.append(index)
-            next_gs_split.append(False)
-    if sum(next_gs_split) == 0: # 没有分裂的gs
+            level_next_no_split.append(index)
+
+            level_step_split_mask.append(False)
+    
+    if len(level_next_to_split) == 0: # 没有分裂的gs
         break
-    output[level] = (now_gs_index, next_gs_split, [tmap[index] for index in now_gs_index if tmap.get(index)])
-    now_gs_index = copy.deepcopy(next_gs_index)
+
+    if len(level_next_to_split) / (len(level_step_no_split)+len(level_step_to_split)) < 0.01:
+        break
+
+    level_l_gs = level_step_no_split + level_step_to_split
+    output[level] = (
+        copy.deepcopy(level_l_gs), 
+        copy.deepcopy([False]*len(level_step_no_split)+level_step_split_mask), 
+        [tmap[index] for index in level_step_to_split if tmap.get(index)]
+    )
+    
+    level_step_no_split.extend(level_next_no_split)
+    level_step_to_split = level_next_to_split
 
     level += 1
+# breakpoint()
 # 添加GS数据
 output['data'] = pgs._data.copy()
 output['level'] = level # indice: 0~level-1
@@ -100,7 +118,7 @@ new_gs_local[..., 0, -4:] = torch.from_numpy(new_gs_quat1_local.as_quat(scalar_f
 new_gs_local[..., 1, -4:] = torch.from_numpy(new_gs_quat2_local.as_quat(scalar_first=True)).float()
 
 assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 0, -4:]), new_gs_gt[..., 0, -4:])
-assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 1, -4:]), new_gs_gt[..., 1, -4:])
+assert torch.allclose(quaternion_multiply(now_gs_split[..., -4:], new_gs_local[:, 1, -4:]), new_gs_gt[..., 1, -4:], )
 
 new_gs_pred = dense_head(features[next_gs_split]).view(-1, 2, 14) # 获得要分裂的点
 loss_func(new_gs_pred, new_gs_local) # M, 2, 14

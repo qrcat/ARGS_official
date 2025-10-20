@@ -11,12 +11,11 @@ import copy
 
 parser = argparse.ArgumentParser()
 # inputs
-parser.add_argument("--shapesplat_ply", default="/mnt/private_rqy/gs_data/shapesplat_ply")
-parser.add_argument("--modelsplat_ply", default="/mnt/private_rqy/gs_data/modelsplat_ply")
+parser.add_argument("--input", default="data/airplane_enhance")
 # outputs
-parser.add_argument("--output", default="/apdcephfs/share_303772734/rqy/gs_merge/")
+parser.add_argument("--output", default="data/airplance_pkl")
 # workers
-parser.add_argument("--workers", type=int, default=32)
+parser.add_argument("--workers", type=int, default=16)
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 
@@ -24,15 +23,9 @@ args = parser.parse_args()
 output_path = Path(args.output)
 output_path.mkdir(parents=True, exist_ok=True)
 
-shapesplat_plys = sorted(Path(args.shapesplat_ply).glob("*.ply"))
-modelsplat_plys = sorted(Path(args.modelsplat_ply).glob("*/*/*/*.ply"))
-shapesplat_npys = [output_path / (path.stem + '.npz') for path in shapesplat_plys]
-modelsplat_npys = [
-    output_path / ('_'.join(path.as_posix().split('/')[-4:-1]) + '.npz') for path in modelsplat_plys
-]
+input_plys = sorted(Path(args.input).glob("*.ply"))
 
-input_plys = shapesplat_plys + modelsplat_plys
-output_npys = shapesplat_npys + modelsplat_npys
+output_pkls = [output_path / (path.stem + '.pkl') for path in input_plys]
 
 tqdm.write(f"Total {len(input_plys)} files")
 
@@ -51,27 +44,42 @@ def get_merge_list(path: Path, output_file: Path):
     # 建立分裂的连接关系
     tmap = {}
     for merge in merge_list:
-        tmap[merge['mixed_id']] = [merge['source_id'], merge['target_id']]
+        tmap[merge['mixed_id']] = [i if isinstance(i, int) else i.item() for i in [merge['source_id'], merge['target_id']]]
     root = merge_list[0]['mixed_id']
     # 获得分层的GS
     level = 0
     output = {}
-    now_gs_index = [root]
+    level_step_no_split, level_step_to_split = [], [root]
     while True:
-        next_gs_index = []
-        next_gs_split = []
-        for index in now_gs_index:
+        level_step_split_mask = []
+        level_next_no_split, level_next_to_split = [], []
+
+        for index in level_step_to_split:
             if tmap.get(index):
-                next_gs_index.append(tmap[index][0])
-                next_gs_index.append(tmap[index][1])
-                next_gs_split.append(True)
+                level_next_to_split.append(tmap[index][0])
+                level_next_to_split.append(tmap[index][1])
+
+                level_step_split_mask.append(True)
             else:
-                next_gs_index.append(index)
-                next_gs_split.append(False)
-        if sum(next_gs_split) == 0: # 没有分裂的gs
+                level_next_no_split.append(index)
+
+                level_step_split_mask.append(False)
+        
+        if len(level_next_to_split) == 0: # 没有分裂的gs
             break
-        output[level] = (now_gs_index, next_gs_split, [tmap[index] for index in now_gs_index if tmap.get(index)])
-        now_gs_index = copy.deepcopy(next_gs_index)
+
+        if len(level_next_to_split) / (len(level_step_no_split)+len(level_step_to_split)) < 0.01:
+            break
+
+        level_l_gs = level_step_no_split + level_step_to_split
+        output[level] = (
+            copy.deepcopy(level_l_gs), 
+            copy.deepcopy([False]*len(level_step_no_split)+level_step_split_mask), 
+            [tmap[index] for index in level_step_to_split if tmap.get(index)]
+        )
+        
+        level_step_no_split.extend(level_next_no_split)
+        level_step_to_split = level_next_to_split
 
         level += 1
     # 添加GS数据
@@ -110,7 +118,7 @@ for worker_i in range(args.workers):
     process.start()
     processes.append(process)
 
-for input_ply, output_npy in zip(input_plys, output_npys):
+for input_ply, output_npy in zip(input_plys, output_pkls):
     queue.put((input_ply, output_npy))
 
 start_time = time.time()
