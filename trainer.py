@@ -3,24 +3,22 @@ from models.warmup import CosineWarmupScheduler
 from utils.local import to_global
 
 import torch
-import lightning as L
 import warnings
 from torch.amp import autocast
+from lightning import LightningModule
 from torch_scatter import scatter_mean, scatter_sum
 
 
-class ARGSTrainer(L.LightningModule):
-    def __init__(self, model: GTransformer):
-        super().__init__()
+class ARGSModel(GTransformer, LightningModule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.save_hyperparameters()
-
-        self.model = model
     
     def training_step(self, batch, batch_idx) -> torch.Tensor:
         now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv = batch
 
         with autocast('cuda'):
-            split, dense = self.model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, None, next_gs_split)
+            split, dense = self.forward(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, None, next_gs_split)
 
         bincount = torch.diff(cu_seqlens_gs)
         batch = torch.arange(
@@ -66,7 +64,7 @@ class ARGSTrainer(L.LightningModule):
         now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv = batch
 
         with autocast('cuda'):
-            split, dense = self.model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, None, next_gs_split)
+            split, dense = self.forward(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, None, next_gs_split)
 
         bincount = torch.diff(cu_seqlens_gs)
         batch = torch.arange(
@@ -102,24 +100,24 @@ class ARGSTrainer(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW([
             {
-                "params": self.model.ffn.parameters(),
+                "params": self.ffn.parameters(),
                 "lr": 0.001,
             },
             {
-                "params": self.model.blocks.parameters(),
+                "params": self.blocks.parameters(),
                 "lr": 0.0001,
 
             },
             {
-                "params": self.model.uncond.parameters(),
+                "params": self.uncond.parameters(),
                 "lr": 0.00001,
             },
             {
-                "params": self.model.split_head.parameters(),
+                "params": self.split_head.parameters(),
                 "lr": 0.001,
             },
             {
-                "params": self.model.dense_head.parameters(),
+                "params": self.dense_head.parameters(),
                 "lr": 0.001,
             }
         ])
@@ -149,12 +147,3 @@ class ARGSTrainer(L.LightningModule):
     def log_scheduler_lr(self, lr_scheduler):
         for i in range(len(lr_scheduler.get_last_lr())):
             self.log(f"lr/last_lr_{i}", lr_scheduler.get_last_lr()[i])
-
-    def on_save_checkpoint(self, checkpoint: dict) -> None:
-        super().on_save_checkpoint(checkpoint)
-
-        checkpoint['model_state_dict'] = self.model.state_dict()
-
-    def on_load_checkpoint(self, checkpoint: dict) -> None:
-        super().on_load_checkpoint(checkpoint)
-    

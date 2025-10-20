@@ -8,8 +8,9 @@ import torch
 dataset = SimpleData()
 
 model = GTransformer(14, 192, 12, 8, 0.1)
-model.load_state_dict(torch.load('log/lightning_logs/version_3/checkpoints/epoch=26-step=7182.ckpt')['model_state_dict'])
+model.load_state_dict(torch.load('log/lightning_logs/version_8/checkpoints/epoch=2-step=798.ckpt')['state_dict'])
 model.eval()
+model.cuda()
 
 before = 8
 upstep = 20
@@ -29,6 +30,8 @@ for i in range(upstep):
         split, dense = model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv)
 
     split_mask = torch.squeeze(split > 0, dim=1)
+    print(f'level{i} point: {split_mask.shape[0]} split: {split_mask.float().mean().item()}%')
+
     now_gs_split = now_gs[split_mask]
     
     new_gs_pred = dense[split_mask].view(-1, 2, 14)
@@ -37,7 +40,6 @@ for i in range(upstep):
     if split_mask.all():
         now_gs = new_gs_pred.view(-1, 14)
     elif split_mask.any():
-        # breakpoint()
         now_gs = now_gs[~split_mask]
         now_gs = torch.cat([now_gs, new_gs_pred.view(-1, 14)], dim=0)
     else:
