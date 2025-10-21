@@ -29,14 +29,14 @@ def init_model():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # train
-    parser.add_argument('--max_epochs', type=int, default=1000)
+    parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--log_dir', type=str, default="log")
     parser.add_argument('--devices', type=int, nargs='+', default=[0])
     parser.add_argument('--f32precision', type=str, default='medium', choices=['high', 'medium'])
     parser.add_argument('--gradient_clip_val', type=float, default=1.0)
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     # dataset
-    parser.add_argument('--dataset', type=str, default="/cluster/personal/ARGS/data/airplane_pkl")
+    parser.add_argument('--dataset', type=str, default="../airplane_pkl")
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=32)
     parser.add_argument('--train_split', type=float, default=0.99)

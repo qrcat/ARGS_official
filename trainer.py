@@ -39,7 +39,7 @@ class ARGSModel(GTransformer, LightningModule):
         loss_mse_sca = torch.nn.functional.l1_loss(dense[..., 7:10], new_gs[..., 7:10])
         loss_mse_qut = torch.nn.functional.l1_loss(dense[..., 10:], new_gs[..., 10:])
         # weight is compute by std
-        loss_mse = 1.0*loss_mse_xyz + 0.02*loss_mse_opa + 0.02*loss_mse_rgb + 0.01*loss_mse_sca + 0.01*loss_mse_qut
+        loss_mse = 1.0*loss_mse_xyz + 0.015*loss_mse_opa + 0.02*loss_mse_rgb + 0.01*loss_mse_sca + 0.01*loss_mse_qut
 
         loss = 0.8*loss_bce+loss_mse
 
@@ -100,7 +100,7 @@ class ARGSModel(GTransformer, LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW([
             {
-                "params": self.ffn.parameters(),
+                "params": self.input_proj.parameters(),
                 "lr": 0.001,
             },
             {

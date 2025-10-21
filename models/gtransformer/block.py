@@ -16,7 +16,7 @@ class RoPE(nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
-        self.freq_scale = nn.Parameter(torch.tensor([1.0]))
+        self.freq_scale = nn.Parameter(torch.tensor([0.0]))
 
     def forward(self, coord, embed):
         """
@@ -28,9 +28,9 @@ class RoPE(nn.Module):
         
         x, y, z = coord.chunk(3, dim=-1)
         
-        x = x * self.freq_scale
-        y = y * self.freq_scale
-        z = z * self.freq_scale
+        x = x * self.freq_scale.exp().clip(max=1e3)
+        y = y * self.freq_scale.exp().clip(max=1e3)
+        z = z * self.freq_scale.exp().clip(max=1e3)
         
         e1, e2, e3, e4, e5, e6 = embed.chunk(6, dim=-1)
 
@@ -51,9 +51,12 @@ class SelfAttn(nn.Module):
         self.dim_heads = embed_dim // num_heads
         self.dropout   = dropout
 
-        self.ln_prev = nn.LayerNorm(embed_dim)
-        self.qkv     = nn.Linear(embed_dim, self.embed_dim*3)
-        self.rope    = RoPE()
+        self.ln_prev   = nn.LayerNorm(embed_dim)
+        self.qkv       = nn.Linear(embed_dim, self.embed_dim*3)
+        self.rope      = RoPE()
+
+        self.proj      = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(dropout)
 
     def forward(self, feat, pos, cu_seqlens_gs=None, mask=None):
         """
@@ -76,12 +79,14 @@ class SelfAttn(nn.Module):
 
             (N, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
-            q = self.rope(pos, q) # [N, C]
-            k = self.rope(pos, k) # [N, C]
-
             q = q.view(N, H, D)
             k = k.view(N, H, D)
             v = v.view(N, H, D)
+
+            # breakpoint()
+            pos = pos.unsqueeze(1).expand(-1, H, -1)
+            q = self.rope(pos, q) # [N, H, D]
+            k = self.rope(pos, k) # [N, H, D]
 
             max_seqlen_qk = torch.diff(cu_seqlens_gs).max().item()
             
@@ -107,14 +112,15 @@ class SelfAttn(nn.Module):
             k = k.permute(0, 2, 1, 3) # [B, H, L, D]
             v = v.permute(0, 2, 1, 3) # [B, H, L, D]
 
-            q = self.rope(pos[..., None, :3], q) # [B, H, L, D]
-            k = self.rope(pos[..., None, :3], k) # [B, H, L, D]
+            pos = pos.unsqueeze(1).expand(-1, H, -1, -1)
+            q = self.rope(pos, q) # [B, H, L, D]
+            k = self.rope(pos, k) # [B, H, L, D]
 
-            out = F.scaled_dot_product_attention(q, k, v, mask, self.dropout)  # [B, H, L, D]
-            out = out.permute(0, 2, 1, 3)                                      # [B, L, H, D]
+            out = F.scaled_dot_product_attention(q, k, v, mask, attn_drop) # [B, H, L, D]
+            out = out.permute(0, 2, 1, 3)                                  # [B, L, H, D]
             out = out.reshape(B, L, C)
         
-        return out + feat
+        return self.proj_drop(self.proj(out))
 
 class CrossAttn(nn.Module):
     def __init__(self, embed_dim, kv_dims, num_heads, dropout=0.1) -> None:
@@ -126,10 +132,12 @@ class CrossAttn(nn.Module):
         self.dropout   = dropout
 
         self.ln_q    = nn.LayerNorm(embed_dim)
-        self.ln_kv   = nn.LayerNorm(kv_dims)
         self.q_proj  = nn.Linear(embed_dim,  embed_dim)
         self.kv_proj = nn.Linear(kv_dims, embed_dim*2)
-        
+
+        self.proj    = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(dropout)
+
     def forward(self, feat, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, mask=None):
         """
         feat            : [N, C] or [B, L, C]   feature
@@ -141,7 +149,7 @@ class CrossAttn(nn.Module):
         return          : [N, C] or [B, L, C]   output
         """
         q         = self.q_proj(self.ln_q(feat))        # [N,  C] or [B, L,  C]
-        kv        = self.kv_proj(self.ln_kv(kv_packed)) # [M, 2C] or [B, S, 2C]
+        kv        = self.kv_proj(kv_packed)             # [M, 2C] or [B, S, 2C]
         k, v      = kv.chunk(2, dim=-1)                 # [M,  C] or [B, S,  C]
 
         attn_drop = self.dropout if self.training else 0.0
@@ -179,11 +187,11 @@ class CrossAttn(nn.Module):
             k = k.permute(0, 2, 1, 3) # [B, H, S, D]
             v = v.permute(0, 2, 1, 3) # [B, H, S, D]
 
-            out = F.scaled_dot_product_attention(q, k, v, mask, self.dropout)  # [B, H, L, D]
-            out = out.permute(0, 2, 1, 3)                                      # [B, L, H, D]
-            out = out.reshape(B, L, C)                      # [B, L, C]
+            out = F.scaled_dot_product_attention(q, k, v, mask, attn_drop) # [B, H, L, D]
+            out = out.permute(0, 2, 1, 3)                                  # [B, L, H, D]
+            out = out.reshape(B, L, C)                                     # [B, L, C]
 
-        return out + feat
+        return self.proj_drop(self.proj(out))
 
 
 class FFN(nn.Module):
@@ -201,7 +209,7 @@ class FFN(nn.Module):
     def forward(self, x):
         y = self.ln_ffn(x)
         y = self.dropout(self.ffn(y))
-        return y + x
+        return y
 
 class Block(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.1) -> None:
@@ -211,9 +219,9 @@ class Block(nn.Module):
         self.ffn = FFN(embed_dim, dropout)
     
     def forward(self, feat, pos, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, mask=None):
-        feat = self.sa(feat, pos, cu_seqlens_gs, mask)
-        feat = self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, mask)
-        feat = self.ffn(feat)
+        feat = feat+self.sa(feat, pos, cu_seqlens_gs, mask)
+        feat = feat+self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, mask)
+        feat = feat+self.ffn(feat)
         return feat
 
 if __name__ == '__main__':
