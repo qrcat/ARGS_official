@@ -1,5 +1,6 @@
 from utils.local import to_local
 
+import json
 import torch
 import pickle
 import numpy as np
@@ -27,8 +28,28 @@ class SimpleData(Dataset):
     def __getitem__(self, idx):
         now_gs_index, next_gs_split, next_gs_index = self.meta[idx]
 
-        now_gs = torch.from_numpy(self.data[now_gs_index]).float()
+        now_gs = torch.from_numpy(self.data[now_gs_index]).float() # [N, 14]
+        # add noise
+        noise_mask = torch.rand_like(now_gs[..., 0]) < 0.3
+        # breakpoint()
+
+        volume_min = now_gs[noise_mask, 7:10].min(dim=1)[0]
+
+        # now_gs[noise_mask, :3] += torch.randn_like(now_gs[noise_mask, :3]) * 0.001
+        # or
+        now_gs[noise_mask, :3] += torch.randn_like(now_gs[noise_mask, :3]) * volume_min[..., None] * 0.3
         
+        now_gs[noise_mask, 3:4] *= (0.95+0.1*torch.randn_like(now_gs[noise_mask, 3:4]))
+        now_gs[noise_mask, 3:4].clip_(0.0, 1.0)
+    
+        now_gs[noise_mask, 4:7] += torch.randn_like(now_gs[noise_mask, 4:7]) * 0.05
+    
+
+        now_gs[..., 7:10] *= (0.9+0.2*torch.randn_like(now_gs[..., 7:10]))
+        now_gs[..., 7:10].clip_(min=1e-6)
+        
+        now_gs[..., 10:] *= (0.9+0.2*torch.randn_like(now_gs[..., 10:]))
+
         next_gs_split = torch.tensor(next_gs_split)
         
         new_gs_gt = torch.from_numpy(self.data[next_gs_index]).float()
@@ -63,14 +84,45 @@ class BatchData(Dataset):
         self.lens = []
 
         assert self.dir.exists()
-        for path in tqdm(self.dir.glob('*.pkl')):
-            data = SimpleData(path)
-            
-            if not post_load:
-                self.data.append(data)
+        
+        data = list(self.dir.glob('*.pkl'))
+
+        meta = self.dir / 'metas.json'
+        if meta.exists():
+            # read metas
+            with meta.open('r') as f:
+                self.meta = json.load(f)
+
+            if len(self.meta['data']) != len(data):
+                self.meta = None
             else:
-                self.data.append(path)
-            self.lens.append(len(data))
+                self.data = self.meta['data']
+                self.lens = self.meta['lens']
+        else:
+            self.meta = None
+        
+        if not self.meta:
+            self.meta = {'data': [], 'lens': [], 'size_per_sample': []}
+            
+            for path in tqdm(data):
+                data = SimpleData(path)
+                # size_per_l = []
+                # for l in range(len(data)):
+                #     size_per_l.append(data[l][1].shape[0])
+                self.meta['data'].append(path.absolute().as_posix())
+                self.meta['lens'].append(len(data))
+
+                if not post_load:
+                    self.data.append(data)
+                else:
+                    self.data.append(path)
+            
+            with meta.open('w') as f:
+                json.dump(self.meta, f)
+        else:
+            self.data = self.meta['data']
+        
+        self.lens = self.meta['lens']
 
         self.cum_lens = np.cumsum([0] + self.lens)
         self.idx2bidx = torch.arange(
@@ -86,10 +138,10 @@ class BatchData(Dataset):
         
         data = self.data[b]
 
-        if isinstance(data, str):
-            return SimpleData(data)[i]
-        else:
+        if isinstance(data, SimpleData):
             return data[i]
+        else:
+            return SimpleData(data)[i]            
 
 
 class BatchDataModule(LightningDataModule):
