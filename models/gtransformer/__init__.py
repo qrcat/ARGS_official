@@ -63,6 +63,6 @@ class GTransformer(nn.Module):
             dense = self.dense_head(feat)
         
         dense  = dense.view(-1, 2, 14)
-        # dense[..., 3:4] = torch.sigmoid(dense[..., 3:4])
+        dense[..., 3:4] = torch.nn.functional.softplus(dense[..., 3:4])
 
         return split, dense

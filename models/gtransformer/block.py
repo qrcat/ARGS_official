@@ -230,14 +230,14 @@ if __name__ == '__main__':
     y = torch.randn(10, 4, 8, 6*8)
     z = rope(x, y)
 
-    x = torch.randn(10, 8, 14)
+    x = torch.randn(10, 8, 64)
 
-    selfattn = SelfAttn(14, 64, 4)
+    selfattn = SelfAttn(64, 4)
     z = selfattn(x)
     
     q = torch.randn(10, 8, 1536)
     kv = torch.randn(10, 6, 1536)
 
-    crossattn = CrossAttn(1536, 1536, 1536, 4)
+    crossattn = CrossAttn(1536, 1536, 4)
     z = crossattn(q, kv)
     breakpoint()
