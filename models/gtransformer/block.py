@@ -58,7 +58,7 @@ class SelfAttn(nn.Module):
         self.proj      = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, pos, cu_seqlens_gs=None, mask=None):
+    def forward(self, feat, pos, cu_seqlens_gs=None, max_seqlen_gs=None, mask=None):
         """
         feat            : [N, C] or [B, L, C]   feature
         pos             : [N, 3] or [B, L, 3]   position
@@ -75,7 +75,7 @@ class SelfAttn(nn.Module):
         attn_drop = self.dropout if self.training else 0.0
 
         if use_flash_attn:
-            assert (cu_seqlens_gs is not None) and (len(feat.shape) == 2)
+            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None) and (len(feat.shape) == 2)
 
             (N, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
@@ -83,17 +83,14 @@ class SelfAttn(nn.Module):
             k = k.view(N, H, D)
             v = v.view(N, H, D)
 
-            # breakpoint()
             pos = pos.unsqueeze(1).expand(-1, H, -1)
             q = self.rope(pos, q) # [N, H, D]
             k = self.rope(pos, k) # [N, H, D]
-
-            max_seqlen_qk = torch.diff(cu_seqlens_gs).max().item()
             
             out = flash_attn_varlen_func(
                 q.half(), k.half(), v.half(), 
                 cu_seqlens_gs, cu_seqlens_gs,
-                max_seqlen_qk, max_seqlen_qk, 
+                max_seqlen_gs, max_seqlen_gs, 
                 attn_drop, 
                 return_attn_probs=False, causal=False
             )      # [N, H, D]
@@ -138,7 +135,7 @@ class CrossAttn(nn.Module):
         self.proj    = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, mask=None):
+    def forward(self, feat, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, mask=None):
         """
         feat            : [N, C] or [B, L, C]   feature
         kv_packed       : [M, C] or [B, S, C]   key-value packed feature
@@ -155,7 +152,8 @@ class CrossAttn(nn.Module):
         attn_drop = self.dropout if self.training else 0.0
 
         if use_flash_attn:
-            assert (cu_seqlens_gs is not None) and (len(feat.shape) == 2) and (len(kv_packed.shape) == 2)
+            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None) and (len(feat.shape) == 2)
+            assert (cu_seqlens_kv is not None) and (max_seqlen_kv is not None) and (len(kv_packed.shape) == 2)
 
             (N, C), M, H, D = feat.shape, kv_packed.shape[0], self.num_heads, self.dim_heads
 
@@ -163,13 +161,10 @@ class CrossAttn(nn.Module):
             k = k.view(M, H, D)
             v = v.view(M, H, D)
 
-            max_seqlen_q = torch.diff(cu_seqlens_gs).max().item()
-            max_seqlen_k = torch.diff(cu_seqlens_kv).max().item()
-
             out = flash_attn_varlen_func(
                 q.half(), k.half(), v.half(), 
                 cu_seqlens_gs, cu_seqlens_kv, 
-                max_seqlen_q, max_seqlen_k, attn_drop,
+                max_seqlen_gs, max_seqlen_kv, attn_drop,
                 return_attn_probs=False, causal=False,
             )
 
@@ -207,9 +202,9 @@ class FFN(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        y = self.ln_ffn(x)
-        y = self.dropout(self.ffn(y))
-        return y
+        x = self.ln_ffn(x)
+        x = self.dropout(self.ffn(x))
+        return x
 
 class Block(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.1) -> None:
@@ -218,11 +213,10 @@ class Block(nn.Module):
         self.ca  = CrossAttn(embed_dim, embed_dim, num_heads, dropout)
         self.ffn = FFN(embed_dim, dropout)
     
-    def forward(self, feat, pos, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, mask=None):
-        feat = feat+self.sa(feat, pos, cu_seqlens_gs, mask)
-        feat = feat+self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, mask)
-        feat = feat+self.ffn(feat)
-        return feat
+    def forward(self, feat, pos, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, mask=None):
+        feat = feat+self.sa(feat, pos, cu_seqlens_gs, max_seqlen_gs, mask)
+        feat = feat+self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, max_seqlen_gs, max_seqlen_kv, mask)
+        return feat+self.ffn(feat)
 
 if __name__ == '__main__':
     rope = RoPE()

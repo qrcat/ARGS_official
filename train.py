@@ -3,9 +3,10 @@ from models.data import BatchDataModule
 from models.gtransformer import GTransformer
 
 from lightning.pytorch.callbacks import ModelCheckpoint
-
+from lightning.pytorch.utilities import rank_zero_only
 import torch
 import lightning as L
+import datetime
 
 import argparse
 
@@ -13,6 +14,8 @@ import argparse
 def init_dataset():
     return BatchDataModule(
         args.dataset, 
+        add_noise_on_data=not args.not_noise_on_data,
+        no_check_meta_len=args.no_check_meta_len,
         post_load=args.load_disk,
         batch_size=args.batch_size,            
         num_workers=args.num_workers,
@@ -20,14 +23,20 @@ def init_dataset():
         split=[args.train_split, 1-args.train_split],
     )
 
-def init_model():
-    model = ARGSModel(14, 192, 12, 8, 0.1)
+def init_model(args):
+    import configs
+
+    config = getattr(configs, args.model)
+
+    model = ARGSModel(cond_dim=768, **config)
 
     return model
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # model
+    parser.add_argument('--model', type=str, default='base_s_768', choices=['base_s_192', 'base_s_384', 'base_s_768'])
     # train
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--log_dir', type=str, default="log")
@@ -37,6 +46,8 @@ if __name__ == "__main__":
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     # dataset
     parser.add_argument('--dataset', type=str, default="../airplane_pkl")
+    parser.add_argument('--not_noise_on_data', action='store_true')
+    parser.add_argument('--no_check_meta_len', action='store_true')
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=32)
     parser.add_argument('--train_split', type=float, default=0.99)
@@ -61,7 +72,7 @@ if __name__ == "__main__":
         elif args.logger in ['wandb', 'wd']:
             from lightning.pytorch.loggers import WandbLogger
 
-            logger = WandbLogger(project="ARGS")
+            logger = WandbLogger(name=f"{datetime.datetime.now().strftime(r'%Y.%m.%d_%H:%M:%S')}", project="ARGS")
         elif args.logger in ['tensorboard', 'tb']:
             from lightning.pytorch.loggers import TensorBoardLogger
 
@@ -69,24 +80,28 @@ if __name__ == "__main__":
 
         checkpoint_callback = ModelCheckpoint(
             every_n_epochs=1,
-            save_last='link',
+            # save_last='link',
             verbose=True,
+            enable_version_counter=True,
         )
         
         print(f"use devices{args.devices}")
         
-        model = init_model()
+        model = init_model(args)
         trainer = L.Trainer(
             default_root_dir=args.log_dir,
-            max_epochs=args.max_epochs, 
+            max_epochs=args.max_epochs,
             log_every_n_steps=1,
+            val_check_interval=0.2,
             callbacks=[checkpoint_callback],
             gradient_clip_val=args.gradient_clip_val,
             accumulate_grad_batches=args.accumulate_grad_batches,
             # device
             devices=args.devices,
             logger=logger,
-            # strategy="deepspeed_stage_2",
+            # strategy="deepspeed_stage_1",
+            # strategy="ddp_find_unused_parameters_true",
+            strategy="ddp",
         )
         trainer.fit(model, datamodule=dataset, ckpt_path=args.checkpoint)
     else:
