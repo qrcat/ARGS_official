@@ -1,4 +1,5 @@
-from .merge import merge_gaussian, merge_gaussian_inv, merge_gaussian_moments, merge_gaussian_moments_ub
+# from .merge import merge_gaussian, merge_gaussian_inv, merge_gaussian_moments, merge_gaussian_moments_ub
+import pgs.merge as merge
 from utils.io import get_combinable_gaussian, activated_gs2gs, activated_gs2train_gs, gs2activated_gs, save_ply, load_ply
 from utils.quantize import Quantize
 from utils.gaussian import build_sigma, unpack_sigma, norm_quats
@@ -190,7 +191,7 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
             # update heapq
             heapq.heappush(self.pq, (np.prod(self.scales_global[index]), dist[1], index, neighbor[1]))
 
-    def simplify(self, num_points):
+    def simplify(self, num_points, merge_method='merge_gaussian_moments'):
         merge_list = []
 
         if self.used_size <= num_points: return merge_list
@@ -198,71 +199,59 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
         tbar = trange(self.used_size-num_points, leave=False)
         while self.used_size > num_points:
             head = heapq.heappop(self.pq)
-            _size, _opa, _index1 = head
-            if not self.valid_mask[_index1]: continue
+            _, _, index_1 = head
+            if not self.valid_mask[index_1]: continue
             # find neighbor
             index = faiss.IndexFlatL2(14)
             index.add(self.weighted_data[self.valid_mask])
 
-            _query = self.weighted_data[_index1]
+            query = self.weighted_data[index_1]
 
-            distance, indices = index.search(_query[None], 2) # this is local indices
-            # breakpoint()
+            _, indices = index.search(query[None], 2) # this is local indices of self.valid_mask
+            
+            index_2 = self.index[self.valid_mask][indices[0][1]]
 
-            _index2 = self.index[self.valid_mask][indices[0][1]]
-
-            # remove the edge
-            self.valid_mask[_index1] = False
-            self.valid_mask[_index2] = False
+            # remove the node
+            self.valid_mask[index_1] = False
+            self.valid_mask[index_2] = False
             
             # ==============================================================================================
             # get the original gaussian
-            _xyz1, _xyz2 = self.xyz_global[_index1], self.xyz_global[_index2]
-            _opacity1, _opacity2 = self.opacities_global[_index1], self.opacities_global[_index2]
-            _feature1, _feature2 = self.features_global[_index1], self.features_global[_index2]
-            _scale1, _scale2 = self.scales_global[_index1], self.scales_global[_index2]
-            _quat1, _quat2 = self.quats_global[_index1], self.quats_global[_index2]
+            xyz_1, xyz_2 = self.xyz_global[index_1], self.xyz_global[index_2]
+            opa_1, opa_2 = self.opacities_global[index_1], self.opacities_global[index_2]
+            rgb_1, rgb_2 = self.features_global[index_1], self.features_global[index_2]
+            scl_1, scl_2 = self.scales_global[index_1], self.scales_global[index_2]
+            qut_1, qut_2 = self.quats_global[index_1], self.quats_global[index_2]
 
-            _sigma1, _inv_sigma1 = build_sigma(_scale1, _quat1)
-            _sigma2, _inv_sigma2 = build_sigma(_scale2, _quat2)
+            sigma_1, inv_sigma_1 = build_sigma(scl_1, qut_1)
+            sigma_2, inv_sigma_2 = build_sigma(scl_2, qut_2)
             
-            # compute the merged gaussian
-            alpha = 0.4 * min(np.log2(self.used_size)/16, 1.0) + 0.6
-            alpha = 1.0
-            _xyz3, _opacity3, _feature3, _sigma3, _inv_sigma3 = merge_gaussian_moments(
-                _xyz1, _opacity1, _feature1, _sigma1, _inv_sigma1, 
-                _xyz2, _opacity2, _feature2, _sigma2, _inv_sigma2, 
-                cross=True, alpha=alpha,
+            xyz_3, opa_3, rgb_3, sigma_3, inv_sigma_3 = getattr(merge, merge_method)(
+                xyz_1, opa_1, rgb_1, sigma_1, inv_sigma_1, 
+                xyz_2, opa_2, rgb_2, sigma_2, inv_sigma_2, 
+                cross=True
             )
-            _scale3, _quat3 = unpack_sigma(_sigma3)
-            _quat3 = norm_quats(_quat3)
-
-            # # modify opacity and scales (by power)
-            # # ============================================================
-            # _opacity3_modify = _opacity1 + _opacity2 - _opacity1*_opacity2
-            # _opacity3_scaled = _opacity3_modify**0.5 / _opacity3**0.5
-            # _scale3_modify = _scale3 / _opacity3_scaled**(1/3)
-            # _opacity3, _scale3 = _opacity3_modify, _scale3_modify
-            # # ============================================================
+            scl_3, qut_3 = unpack_sigma(sigma_3)
+            qut_3 = norm_quats(qut_3)
 
             # update the gaussian
-            _index3 = self.last_index
+            index_3 = self.last_index # global index
 
             self.used_size -= 1 # update index
 
-            self._data[_index3] = np.concatenate([_xyz3, _opacity3, _feature3, _scale3, _quat3])
-            self.valid_mask[_index3] = True
+            self._data[index_3] = np.concatenate([xyz_3, opa_3, rgb_3, scl_3, qut_3])
+            self.valid_mask[index_3] = True
 
             merge_list.append({
-                "source": np.concatenate([_xyz1, _opacity1, _feature1, _scale1, _quat1]),
-                "source_id": _index1 if isinstance(_index1, int) else _index1.item(),
-                "target": np.concatenate([_xyz2, _opacity2, _feature2, _scale2, _quat2]),
-                "target_id": _index2 if isinstance(_index2, int) else _index2.item(),
-                "mixed": np.concatenate([_xyz3, _opacity3, _feature3, _scale3, _quat3]),
-                "mixed_id": _index3,
+                "source": np.concatenate([xyz_1, opa_1, rgb_1, scl_1, qut_1]),
+                "source_id": index_1 if isinstance(index_1, int) else index_1.item(),
+                "target": np.concatenate([xyz_2, opa_2, rgb_2, scl_2, qut_2]),
+                "target_id": index_2 if isinstance(index_2, int) else index_2.item(),
+                "mixed": np.concatenate([xyz_3, opa_3, rgb_3, scl_3, qut_3]),
+                "mixed_id": index_3,
             })
 
-            heapq.heappush(self.pq, (np.prod(self.scales_global[_index3]), self.opacities_global[_index3], _index3))
+            heapq.heappush(self.pq, (np.prod(self.scales_global[index_3]), self.opacities_global[index_3], index_3))
 
             tbar.update(1)
         return merge_list
@@ -270,28 +259,22 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
     @staticmethod
     def load(path, save=False, debug=False) -> 'PGSMoments':
         path = Path(path)
-        pkl = path.with_suffix('.pkl')
-        if os.path.exists(pkl):
-            with open(pkl, 'rb') as f:
-                pgs = pickle.load(f)
-        else:
-            xyz, opacities, features_dc, scales, rots = gs2activated_gs(*load_ply(path))
-            # normalize the data
-            center = (xyz.max(axis=0) + xyz.min(axis=0)) / 2
-            xyz = xyz - center
-            scale = (xyz.max(axis=0) - xyz.min(axis=0)).max()
-            xyz = xyz / scale
-            scales = scales / scale
 
-            if debug:
-                xyz, opacities, features_dc, scales, rots = activated_gs2gs(xyz, opacities, features_dc, scales, rots)
-                save_ply('test.ply', xyz, opacities, features_dc, scales, rots)
-                exit()
+        xyz, opacities, features_dc, scales, rots = gs2activated_gs(*load_ply(path))
+        # normalize the data
+        center = (xyz.max(axis=0) + xyz.min(axis=0)) / 2
+        xyz = xyz - center
+        scale = (xyz.max(axis=0) - xyz.min(axis=0)).max()
+        xyz = xyz / scale
+        scales = scales / scale
 
-            pgs = PGSMoments(xyz, opacities, features_dc, scales, rots)
+        if debug:
+            xyz, opacities, features_dc, scales, rots = activated_gs2gs(xyz, opacities, features_dc, scales, rots)
+            save_ply('test.ply', xyz, opacities, features_dc, scales, rots)
+            exit()
 
-            if save:
-                with open(pkl, 'wb') as f: pickle.dump(pgs, f)
+        pgs = PGSMoments(xyz, opacities, features_dc, scales, rots)
+
         return pgs
 
 class PGSMomentSample(PGSMoments):

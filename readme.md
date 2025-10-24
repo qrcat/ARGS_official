@@ -1,5 +1,5 @@
 # install 
-```
+```bash
 # https://pytorch.org/get-started/previous-versions/
 
 pip install spconv-cu${CUDA_VERSION}
@@ -10,8 +10,21 @@ pip install huggingface_hub timm
 conda install -c pytorch faiss-cpu=1.12.0
 ```
 
+```bash
+pip install scipy plyfile faiss-cpu==1.12.0
 ```
+
+```bash
+# install torch from https://pytorch.org/get-started/previous-versions/
+
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
+
 pip install lightning
+```
+
+for condition
+```
+pip install open_clip_torch
 ```
 
 # 生成数据

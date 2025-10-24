@@ -126,7 +126,7 @@ def merge_gaussian_moments(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, alpha
     
     return u3, o3, f3, s3, inv_s3
 
-def merge_gaussian_moments_ub(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, alpha=1.0, cross=False, delta=0.1):
+def merge_gaussian_moments_ub(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, cross=False, **kwargs):
     oc = o1*o2
     uc, sc = _compute_Gaussian_cross_(u1, u2, s1, s2)
 
@@ -150,17 +150,9 @@ def merge_gaussian_moments_ub(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, al
     u3 = m1 / m0
 
     if isinstance(u1, torch.Tensor):
-        inv_s3 = (torch.linalg.inv(s1) * o1 + torch.linalg.inv(s2) * o2) / (o1+o2) / 2 / alpha * torch.exp(-delta*torch.norm(u1-u2)) 
-        try:
-            s3 = torch.linalg.solve(inv_s3, torch.eye(s1.shape[0], device=s1.device))
-        except torch.linalg.LinAlgError:
-            eps = 1e-6 * torch.eye(s1.shape[0], device=s1.device)
-            s3 = torch.linalg.solve(inv_s3 + eps, torch.eye(s1.shape[0], device=s1.device))
-
-        s3 = (s3 + s3.T) / 2
-        s3 = s3 if torch.det(s3) > 0 else -s3
+        s3 = (m0_1*s1+m0_2*s2)/m0
+        inv_s3 = None
     elif isinstance(u1, np.ndarray):
-        # inv_s3 = (np.linalg.inv(s1) * o1 + np.linalg.inv(s2) * o2) / (o1+o2) / 2 / alpha * np.exp(-delta*np.linalg.norm(u1-u2)) 
         s3 = (m0_1*s1+m0_2*s2)/m0
         inv_s3 = None
         
@@ -169,3 +161,37 @@ def merge_gaussian_moments_ub(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, al
     
     return u3, o3, f3, s3, inv_s3
 
+def merge_gaussian_moments_ub_scale(u1, o1, f1, s1, inv_s1, u2, o2, f2, s2, inv_s2, cross=False, delta=0.1, **kwargs):
+    oc = o1*o2
+    uc, sc = _compute_Gaussian_cross_(u1, u2, s1, s2)
+
+    # this is the best way to compute o3
+    # ==========================================
+    o3 = o1 + o2 - o1*o2
+    # ==========================================
+
+    m0_1 = _compute_Gaussian_m0(o1, s1)
+    m0_2 = _compute_Gaussian_m0(o2, s2)
+    m0 = m0_1 + m0_2
+    if cross:
+        m0_c = _compute_Gaussian_m0(oc, sc)
+        m0 -= m0_c
+    
+    m1 = _compute_Gaussian_m1(m0_1, u1) + _compute_Gaussian_m1(m0_2, u2)
+    if cross:
+        m1_c = _compute_Gaussian_m1(m0_c, uc)
+        m1 -= m1_c
+    
+    u3 = m1 / m0
+
+    if isinstance(u1, torch.Tensor):
+        s3 = (m0_1*s1+m0_2*s2)/m0
+        inv_s3 = None
+    elif isinstance(u1, np.ndarray):
+        s3 = (m0_1*s1+m0_2*s2)/m0 * np.exp(-delta*np.linalg.norm(u1-u2)) 
+        inv_s3 = None
+        
+    # weighted features
+    f3 = (m0_1*f1 + m0_2*f2)/(m0_1+m0_2)
+    
+    return u3, o3, f3, s3, inv_s3

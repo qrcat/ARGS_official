@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 
+
 class Augment:
     color_stage = {
         "low": { "brightness": 0.1,
@@ -273,10 +274,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, default='03636649-cfaf30102d9b7cc6cd6d67789347621.ply')
     parser.add_argument('--output', type=str, default='03636649-enhance.ply')
+    parser.add_argument('--nums', type=int, default=10)
     args = parser.parse_args()
-    
+
     augment = Augment()
     
-    # for shapesplat and modelsplat, upaxis = 3
-    for i in range(100):
+    for i in range(args.nums):
         enhance_gaussian_field(args.input, f'{args.output}-{i}.ply', augment)
