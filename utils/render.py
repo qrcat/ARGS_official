@@ -10,17 +10,14 @@ def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.
     vec2 = normalize(lookdir)
     vec0 = normalize(np.cross(up, vec2))
     vec1 = normalize(np.cross(vec2, vec0))
-    m = np.stack([vec0, vec1, vec2, position], axis=1)
-    return m
 
-def load_ply_torch(path: str):
-    xyz, opacities, features_dc, scales, rots = gs2activated_gs(*load_ply(path))
-    xyz = torch.as_tensor(xyz, dtype=torch.float, device='cuda')
-    opacities = torch.as_tensor(opacities, dtype=torch.float, device='cuda')
-    features_dc = torch.as_tensor(features_dc, dtype=torch.float, device='cuda')
-    scales = torch.as_tensor(scales, dtype=torch.float, device='cuda')
-    rots = torch.as_tensor(rots, dtype=torch.float, device='cuda')
-    return xyz, opacities, features_dc, scales, rots
+    view_mat = np.eye(4)
+    view_mat[:3, 0] = vec0
+    view_mat[:3, 1] = vec1
+    view_mat[:3, 2] = vec2
+    view_mat[:3, 3] = position
+
+    return view_mat
 
 def camera_matrix_from_angles(azimuth: float, elevation: float, radius: float = 1.0, up: np.ndarray = None) -> np.ndarray:
     """
@@ -55,7 +52,6 @@ def camera_matrix_from_angles(azimuth: float, elevation: float, radius: float = 
     lookdir = -position  # 指向原点
     
     # 3. 使用 viewmatrix 构建视图矩阵
-    view_mat = np.eye(4)
-    view_mat[:3, :4] = viewmatrix(lookdir, up, position)
+    view_mat = np.linalg.inv(viewmatrix(lookdir, up, position))
     
     return view_mat
