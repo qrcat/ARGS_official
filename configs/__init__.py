@@ -1,6 +1,6 @@
-# embedding_dim // num_heads %  6 == 0
+# 5.3 M
 base_s_192 = dict(
-    input_dim=14, embedding_dim=192, num_layers=12, num_heads=3, dropout=0.1
+    input_dim=14, embedding_dim=192, num_layers=12, num_heads=4, dropout=0.1
 )
 
 base_s_432 = dict(

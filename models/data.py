@@ -26,7 +26,7 @@ class SimpleData(Dataset):
                 break
         try:
             self.cond = np.load(self.path.parent / 'feature.npy')
-        except:
+        except FileNotFoundError:
             warnings.warn(f'feature.npy not found in {self.path.parent}')
             self.cond = np.random.randn(8, 10, 768) # fake condition
 
@@ -108,6 +108,57 @@ class SimpleData(Dataset):
         batch_size = len(bincount_gs)
 
         return now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch_gs, batch_new_gs, batch_size
+
+    @staticmethod
+    def collate_fn_BLC(batch):
+        now_gs = torch.cat([data[0] for data in batch])
+        next_gs_split = torch.cat([data[1] for data in batch])
+        new_gs = torch.cat([data[2] for data in batch])
+        embedd = torch.cat([data[3] for data in batch])
+
+        cu_seqlens_gs = torch.cumsum(
+            torch.tensor([0]+[data[0].shape[0] for data in batch]), dim=0
+        ).to(dtype=torch.int32)
+        cu_seqlens_kv = torch.cumsum(
+            torch.tensor([0]+[data[3].shape[0] for data in batch]), dim=0
+        ).to(dtype=torch.int32)
+
+        bincount_gs = torch.diff(cu_seqlens_gs)
+        bincount_kv = torch.diff(cu_seqlens_kv)
+        
+        maxseq_gs = bincount_gs.max()
+        maxseq_kv = bincount_kv.max()
+
+        batch_gs = torch.arange(
+            len(bincount_gs), device=bincount_gs.device, dtype=torch.long
+        ).repeat_interleave(bincount_gs)
+
+        bincount_new_gs = torch.tensor([data[2].shape[0] for data in batch])
+        batch_new_gs = torch.arange(
+            len(bincount_new_gs), device=bincount_new_gs.device, dtype=torch.long
+        ).repeat_interleave(bincount_new_gs)
+
+        batch_size = len(bincount_gs)
+
+        prev_gs_batch = torch.zeros(batch_size, maxseq_gs, 14).to(prev_gs.device)
+        condition_batch = torch.zeros(batch_size, maxseq_kv, condition.shape[-1]).to(condition.device)
+        prev_gs_mask  = torch.zeros(batch_size, maxseq_gs, maxseq_gs, device=prev_gs.device, dtype=torch.bool)
+        condition_mask = torch.zeros(batch_size, maxseq_gs, maxseq_kv, device=condition.device, dtype=torch.bool)
+        for i in range(batch_size):
+            prev_gs_batch[i, :cu_seqlens_gs[i+1]-cu_seqlens_gs[i], :] = prev_gs[cu_seqlens_gs[i]:cu_seqlens_gs[i+1], :]
+            condition_batch[i, :cu_seqlens_kv[i+1]-cu_seqlens_kv[i], :] = condition[cu_seqlens_kv[i]:cu_seqlens_kv[i+1], :]
+            prev_gs_mask[i, :cu_seqlens_gs[i+1]-cu_seqlens_gs[i], :cu_seqlens_gs[i+1]-cu_seqlens_gs[i]] = True
+            condition_mask[i, :cu_seqlens_gs[i+1]-cu_seqlens_gs[i], :cu_seqlens_kv[i+1]-cu_seqlens_kv[i]] = True
+
+        mask = torch.rand(*prev_gs_batch.shape[:-1], device=prev_gs.device) < 0.1
+        for i in range(batch_size): mask[i, :cu_seqlens_gs[i+1]-cu_seqlens_gs[i]] = False
+
+        recon = self.forward(prev_gs_batch, prev_gs_batch[..., :3], condition_batch, None, None, None, None, prev_gs_mask, condition_mask, mask)
+
+
+        return now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch_gs, batch_new_gs, batch_size
+
+
 
 class BatchData(Dataset):
     def __init__(

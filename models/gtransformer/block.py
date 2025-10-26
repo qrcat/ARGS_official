@@ -58,7 +58,7 @@ class SelfAttn(nn.Module):
         self.proj      = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, pos, cu_seqlens_gs=None, max_seqlen_gs=None, mask=None):
+    def forward(self, feat, pos, cu_seqlens_gs=None, max_seqlen_gs=None, attn_mask=None):
         """
         feat            : [N, C] or [B, L, C]   feature
         pos             : [N, 3] or [B, L, 3]   position
@@ -68,14 +68,14 @@ class SelfAttn(nn.Module):
         return          : [N, C] or [B, L, C]   output
         """
 
-        x       = self.ln_prev(feat)   # [N,  C] or [B, L,  C]
-        qkv     = self.qkv(x)          # [N, 3C] or [B, L, 3C]
-        q, k, v = qkv.chunk(3, dim=-1) # [N,  C] or [B, L,  C]
+        x       = self.ln_prev(feat)                    # [N,  C] or [B, L,  C]
+        qkv     = self.qkv(x)                           # [N, 3C] or [B, L, 3C]
+        q, k, v = qkv.chunk(3, dim=-1)                  # [N,  C] or [B, L,  C]
 
         attn_drop = self.dropout if self.training else 0.0
 
-        if use_flash_attn:
-            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None) and (len(feat.shape) == 2)
+        if len(feat.shape) == 2:
+            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None)
 
             (N, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
@@ -84,8 +84,8 @@ class SelfAttn(nn.Module):
             v = v.view(N, H, D)
 
             pos = pos.unsqueeze(1).expand(-1, H, -1)
-            q = self.rope(pos, q) # [N, H, D]
-            k = self.rope(pos, k) # [N, H, D]
+            q = self.rope(pos, q)                       # [N, H, D]
+            k = self.rope(pos, k)                       # [N, H, D]
             
             out = flash_attn_varlen_func(
                 q.half(), k.half(), v.half(), 
@@ -93,28 +93,31 @@ class SelfAttn(nn.Module):
                 max_seqlen_gs, max_seqlen_gs, 
                 attn_drop, 
                 return_attn_probs=False, causal=False
-            )      # [N, H, D]
+            )                                           # [N, H, D]
             
-            out = out.reshape(N, C)              # [N, C]
+            out = out.reshape(N, C)                     # [N, C]
         else:
-            assert (mask is not None) and (len(feat.shape) == 3)
+            assert (attn_mask is not None) and (len(feat.shape) == 3)
 
             (B, L, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
-            q = q.view(B, L, H, D) # [B, L, H, D]
-            k = k.view(B, L, H, D) # [B, L, H, D]
-            v = v.view(B, L, H, D) # [B, L, H, D]
+            q = q.view(B, L, H, D)                      # [B, L, H, D]
+            k = k.view(B, L, H, D)                      # [B, L, H, D]
+            v = v.view(B, L, H, D)                      # [B, L, H, D]
             
-            q = q.permute(0, 2, 1, 3) # [B, H, L, D]
-            k = k.permute(0, 2, 1, 3) # [B, H, L, D]
-            v = v.permute(0, 2, 1, 3) # [B, H, L, D]
+            q = q.permute(0, 2, 1, 3)                   # [B, H, L, D]
+            k = k.permute(0, 2, 1, 3)                   # [B, H, L, D]
+            v = v.permute(0, 2, 1, 3)                   # [B, H, L, D]
 
             pos = pos.unsqueeze(1).expand(-1, H, -1, -1)
-            q = self.rope(pos, q) # [B, H, L, D]
-            k = self.rope(pos, k) # [B, H, L, D]
-
-            out = F.scaled_dot_product_attention(q, k, v, mask, attn_drop) # [B, H, L, D]
-            out = out.permute(0, 2, 1, 3)                                  # [B, L, H, D]
+            q = self.rope(pos, q)                       # [B, H, L, D]
+            k = self.rope(pos, k)                       # [B, H, L, D]
+            
+            out = F.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask[:, None].repeat(1, H, 1, 1),  # [B, H, L, L]
+                attn_drop, is_causal=False)             # [B, H, L, D]
+            out = out.permute(0, 2, 1, 3)               # [B, L, H, D]
             out = out.reshape(B, L, C)
         
         return self.proj_drop(self.proj(out))
@@ -135,7 +138,7 @@ class CrossAttn(nn.Module):
         self.proj    = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, mask=None):
+    def forward(self, feat, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, attn_mask=None):
         """
         feat            : [N, C] or [B, L, C]   feature
         kv_packed       : [M, C] or [B, S, C]   key-value packed feature
@@ -151,9 +154,8 @@ class CrossAttn(nn.Module):
 
         attn_drop = self.dropout if self.training else 0.0
 
-        if use_flash_attn:
-            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None) and (len(feat.shape) == 2)
-            assert (cu_seqlens_kv is not None) and (max_seqlen_kv is not None) and (len(kv_packed.shape) == 2)
+        if len(feat.shape) == 2 and len(kv_packed.shape) == 2:
+            assert (cu_seqlens_gs is not None) and (max_seqlen_gs is not None) and (cu_seqlens_kv is not None) and (max_seqlen_kv is not None)
 
             (N, C), M, H, D = feat.shape, kv_packed.shape[0], self.num_heads, self.dim_heads
 
@@ -170,7 +172,7 @@ class CrossAttn(nn.Module):
 
             out = out.reshape(N, C)
         else:
-            assert (mask is not None) and (len(feat.shape) == 3) and (len(kv_packed.shape) == 3)
+            assert (attn_mask is not None) and (len(feat.shape) == 3) and (len(kv_packed.shape) == 3)
 
             (B, L, C), S, H, D = feat.shape, kv_packed.shape[1], self.num_heads, self.dim_heads
 
@@ -178,13 +180,16 @@ class CrossAttn(nn.Module):
             k = k.view(B, S, H, D)
             v = v.view(B, S, H, D)
 
-            q = q.permute(0, 2, 1, 3) # [B, H, L, D]
-            k = k.permute(0, 2, 1, 3) # [B, H, S, D]
-            v = v.permute(0, 2, 1, 3) # [B, H, S, D]
+            q = q.permute(0, 2, 1, 3)                   # [B, H, L, D]
+            k = k.permute(0, 2, 1, 3)                   # [B, H, S, D]
+            v = v.permute(0, 2, 1, 3)                   # [B, H, S, D]
 
-            out = F.scaled_dot_product_attention(q, k, v, mask, attn_drop) # [B, H, L, D]
-            out = out.permute(0, 2, 1, 3)                                  # [B, L, H, D]
-            out = out.reshape(B, L, C)                                     # [B, L, C]
+            out = F.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask[:, None].repeat(1, H, 1, 1),  # [B, H, L, S]
+                attn_drop, is_causal=False)             # [B, H, L, D]
+            out = out.permute(0, 2, 1, 3)               # [B, L, H, D]
+            out = out.reshape(B, L, C)                  # [B, L, C]
 
         return self.proj_drop(self.proj(out))
 
@@ -213,10 +218,11 @@ class Block(nn.Module):
         self.ca  = CrossAttn(embed_dim, embed_dim, num_heads, dropout)
         self.ffn = FFN(embed_dim, dropout)
     
-    def forward(self, feat, pos, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, mask=None):
-        feat = feat+self.sa(feat, pos, cu_seqlens_gs, max_seqlen_gs, mask)
-        feat = feat+self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, max_seqlen_gs, max_seqlen_kv, mask)
-        return feat+self.ffn(feat)
+    def forward(self, feat, pos, kv_packed, cu_seqlens_gs=None, cu_seqlens_kv=None, max_seqlen_gs=None, max_seqlen_kv=None, attn_mask_feat=None, attn_mask_feat_kv=None):
+        feat = feat+self.sa(feat, pos, cu_seqlens_gs, max_seqlen_gs, attn_mask_feat)
+        feat = feat+self.ca(feat, kv_packed, cu_seqlens_gs, cu_seqlens_kv, max_seqlen_gs, max_seqlen_kv, attn_mask_feat_kv)
+        feat = feat+self.ffn(feat)
+        return feat
 
 if __name__ == '__main__':
     rope = RoPE()

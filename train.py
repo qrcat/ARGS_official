@@ -1,4 +1,4 @@
-from trainer import ARGSModel
+from trainer import MaskedGSModel, ARGSModel
 from models.data import BatchDataModule
 from models.gtransformer import GTransformer
 
@@ -28,7 +28,10 @@ def init_model(args):
 
     config = getattr(configs, args.model)
 
-    model = ARGSModel(cond_dim=768, **config)
+    if args.method == 'mask':
+        model = MaskedGSModel(cond_dim=768, **config)
+    else:
+        model = ARGSModel(cond_dim=768, **config)
 
     return model
 
@@ -37,7 +40,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # model
     parser.add_argument('--model', type=str, default='base_s_768', choices=['base_s_192', 'base_s_384', 'base_s_768'])
+    parser.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args'])
+    parser.add_argument('--pop_key', action='store_true')
     # train
+    
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--log_dir', type=str, default="log")
     parser.add_argument('--devices', type=int, nargs='+', default=[0])
@@ -72,7 +78,7 @@ if __name__ == "__main__":
         elif args.logger in ['wandb', 'wd']:
             from lightning.pytorch.loggers import WandbLogger
 
-            logger = WandbLogger(name=f"{datetime.datetime.now().strftime(r'%Y.%m.%d_%H:%M:%S')}", project="ARGS")
+            logger = WandbLogger(name=f"{datetime.datetime.now().strftime(r'%Y.%m.%d_%H:%M:%S')}", project=f'args_{args.method}')
         elif args.logger in ['tensorboard', 'tb']:
             from lightning.pytorch.loggers import TensorBoardLogger
 
@@ -99,10 +105,27 @@ if __name__ == "__main__":
             # device
             devices=args.devices,
             logger=logger,
+            precision=32,
             # strategy="deepspeed_stage_1",
             # strategy="ddp_find_unused_parameters_true",
             strategy="ddp",
         )
+        if args.method == 'mask2args':
+            state_dict = torch.load(args.checkpoint)['state_dict']
+            if args.pop_key:
+                poppattern = ['f_uncond', 'dense_head']
+                for key in list(state_dict.keys()):
+                    if any(pattern in key for pattern in poppattern):
+                        state_dict.pop(key)
+            else:    
+                state_dict['dense_head.4.weight'] = state_dict['dense_head.4.weight'].repeat(2, 1)
+                state_dict['dense_head.4.bias'] = state_dict['dense_head.4.bias'].repeat(2)
+
+            rets = model.load_state_dict(state_dict, strict=False)
+            print(rets)
+            
+            args.checkpoint = None
+            
         trainer.fit(model, datamodule=dataset, ckpt_path=args.checkpoint)
     else:
         from models.data import SimpleData
@@ -110,16 +133,20 @@ if __name__ == "__main__":
         from utils.io import activated_gs2gs, save_ply
         from utils.local import to_global
         import torch
+        import configs
 
 
-        dataset = SimpleData()
+        dataset = SimpleData('point_cloud.pkl')
 
-        model = GTransformer(14, 192, 12, 8, 0.1)
-        model.load_state_dict(torch.load('log/lightning_logs/version_3/checkpoints/epoch=26-step=7182.ckpt')['state_dict'])
+        config = getattr(configs, args.model)
+
+        model = GTransformer(cond_dim=768, **config)
+        model.load_state_dict(torch.load(args.checkpoint)['state_dict'])
         model.eval()
+        model.cuda()
 
-        before = 8
-        upstep = 20
+        before = 5
+        upstep = 1
 
         now_gs, next_gs_split, new_gs, embedd = dataset[before]
 
@@ -133,7 +160,7 @@ if __name__ == "__main__":
             now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv = now_gs.cuda(), next_gs_split.cuda(), new_gs.cuda(), embedd.cuda(), cu_seqlens_gs.cuda(), cu_seqlens_kv.cuda()
 
             with torch.no_grad():
-                split, dense = model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv)
+                split, dense = model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, cu_seqlens_gs[-1], cu_seqlens_kv[-1])
 
             split_mask = torch.squeeze(split > 0, dim=1)
             now_gs_split = now_gs[split_mask]

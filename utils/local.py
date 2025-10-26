@@ -16,16 +16,12 @@ def to_local(parent: torch.Tensor, children: torch.Tensor) -> torch.Tensor:
 
     # Δpos
     local[..., :3] = children[..., :3] - parent[:, None, :3]
-    # Δopacity (ratio)
-    p_op = torch.clamp(parent[:, 3:4], min=eps)
-    c_op = torch.clamp(children[..., 3:4], min=eps)
-    local[..., 3:4] = c_op / p_op[:, None, :]
-    # Δfeature (difference)
-    local[..., 4:7] = children[..., 4:7] - parent[:, None, 4:7]
-    # Δscale = log(child/parent)
-    p_s = torch.clamp(parent[:, 7:10], min=eps)
-    c_s = torch.clamp(children[..., 7:10], min=eps)
-    local[..., 7:10] = torch.log(c_s) - torch.log(p_s[:, None, :])
+    # opacity
+    local[..., 3:4] = children[..., 3:4]
+    # feature
+    local[..., 4:7] = children[..., 4:7]
+    # scale
+    local[..., 7:10] = children[..., 7:10]
     # Δquat = q_parent^{-1} ⊗ q_child
     q_parent = normalize_quaternions(parent[:, -4:])
     q_child0 = normalize_quaternions(children[:, 0, -4:])
@@ -45,12 +41,12 @@ def to_global(parent: torch.Tensor, local: torch.Tensor) -> torch.Tensor:
     out = torch.zeros_like(local)
     # pos
     out[..., :3] = parent[:, None, :3] + local[..., :3]
-    # opacity (ratio * parent)
-    out[..., 3:4] = parent[:, None, 3:4] * local[..., 3:4]
+    # opacity
+    out[..., 3:4] = local[..., 3:4]
     # feature
-    out[..., 4:7] = parent[:, None, 4:7] + local[..., 4:7]
-    # scale = parent * exp(Δ)
-    out[..., 7:10] = torch.exp(local[..., 7:10] + torch.log(parent[:, None, 7:10]))
+    out[..., 4:7] = local[..., 4:7]
+    # scale
+    out[..., 7:10] = local[..., 7:10]
     # quat = q_parent ⊗ Δq
     q_parent = normalize_quaternions(parent[:, -4:])
     q_loc0 = normalize_quaternions(local[:, 0, -4:])
