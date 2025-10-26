@@ -1,4 +1,4 @@
-from utils.render import camera_matrix_from_angles
+from utils.render import camera_matrix_from_angles, tensor_from_numpy, load_ply_torch
 from utils.shs import SH2RGB
 from utils.io import  gs2activated_gs, load_ply
 from torchvision.transforms.functional import normalize
@@ -13,13 +13,6 @@ import torch
 import numpy as np
 import time
 
-
-def tensor_from_numpy(np_ls: list, device):
-    return [torch.from_numpy(np_arr).to(device, dtype=torch.float) for np_arr in np_ls]
-
-def load_ply_torch(path: str, device):
-    rets = gs2activated_gs(*load_ply(path))
-    return tensor_from_numpy(rets, device)
 
 @torch.no_grad()
 def worker(queue, count, device):

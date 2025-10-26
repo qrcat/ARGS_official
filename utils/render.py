@@ -1,5 +1,13 @@
+from .io import  gs2activated_gs, load_ply
 import numpy as np
+import torch
 
+def tensor_from_numpy(np_ls: list, device):
+    return [torch.from_numpy(np_arr).to(device, dtype=torch.float) for np_arr in np_ls]
+
+def load_ply_torch(path: str, device):
+    rets = gs2activated_gs(*load_ply(path))
+    return tensor_from_numpy(rets, device)
 
 def normalize(x: np.ndarray) -> np.ndarray:
     """Normalization helper function."""

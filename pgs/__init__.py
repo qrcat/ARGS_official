@@ -104,7 +104,7 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
         self._valid_mask = np.asarray([True] * self.used_size + [False] * (self.used_size-1))
         self._index = np.arange(self.full_size)
 
-        self._dist_w = np.array([100.0, 100.0, 100.0, 1.0, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0])
+        self._dist_w = np.array([1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0])
 
         # update pq
         self.pq = [(_size, _opa, _index) for _size, _opa, _index in zip(np.prod(self.scales, axis=-1), self.opacities, self.index)]
