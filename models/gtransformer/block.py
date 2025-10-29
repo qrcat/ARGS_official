@@ -18,21 +18,32 @@ class RoPE(nn.Module):
 
         self.freq_scale = nn.Parameter(torch.tensor([0.0]))
 
-    def forward(self, coord, embed):
+    def get_freqs(self, dim, base=10000):
+        half = dim // 2
+        freqs = base ** (-torch.arange(0, half, 1, dtype=torch.float32) / half)
+        return freqs  # [half]
+
+    def forward(self, coord, embed, hdim=-2):
         """
         coord: [..., 3]
-        embed: [..., 6*C]
+        embed: [..., H,...]
         """
         assert coord.shape[-1] == 3
-        assert embed.shape[-1] % 6 == 0
+        assert embed.shape[hdim] % 6 == 0
         
         x, y, z = coord.chunk(3, dim=-1)
         
-        x = x * self.freq_scale.exp().clip(max=1e3)
-        y = y * self.freq_scale.exp().clip(max=1e3)
-        z = z * self.freq_scale.exp().clip(max=1e3)
+        freqs = self.get_freqs(embed.shape[-1]).to(self.freq_scale.device)
         
-        e1, e2, e3, e4, e5, e6 = embed.chunk(6, dim=-1)
+        x = x * freqs * self.freq_scale.exp().clip(max=1e3)
+        y = y * freqs * self.freq_scale.exp().clip(max=1e3)
+        z = z * freqs * self.freq_scale.exp().clip(max=1e3)
+
+        f_x, f_y, f_z = embed.chunk(3, dim=hdim)
+
+        e1, e2 = f_x.chunk(2, dim=-1)
+        e3, e4 = f_y.chunk(2, dim=-1)
+        e5, e6 = f_z.chunk(2, dim=-1)
 
         o0 = e1*torch.cos(x)-e2*torch.sin(x)
         o1 = e2*torch.cos(x)+e1*torch.sin(x)
@@ -41,7 +52,7 @@ class RoPE(nn.Module):
         o4 = e5*torch.cos(z)-e6*torch.sin(z)
         o5 = e6*torch.cos(z)+e5*torch.sin(z)
 
-        return torch.cat([o0, o1, o2, o3, o4, o5], dim=-1)
+        return torch.cat([torch.cat([o0, o1], dim=-1),torch.cat([o2, o3], dim=-1),torch.cat([o4, o5], dim=-1),], dim=hdim)
 
 class SelfAttn(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.1) -> None:
@@ -83,7 +94,7 @@ class SelfAttn(nn.Module):
             k = k.view(N, H, D)
             v = v.view(N, H, D)
 
-            pos = pos.unsqueeze(1).expand(-1, H, -1)
+            pos = pos.unsqueeze(1)
             q = self.rope(pos, q)                       # [N, H, D]
             k = self.rope(pos, k)                       # [N, H, D]
             

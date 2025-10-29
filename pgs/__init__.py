@@ -104,7 +104,7 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
         self._valid_mask = np.asarray([True] * self.used_size + [False] * (self.used_size-1))
         self._index = np.arange(self.full_size)
 
-        self._dist_w = np.array([1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0])
+        self._dist_w = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         # update pq
         self.pq = [(_size, _opa, _index) for _size, _opa, _index in zip(np.prod(self.scales, axis=-1), self.opacities, self.index)]
@@ -172,24 +172,6 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
     @property
     def quats_global(self):
         return self._data[:self.last_index, 10:]
-
-    def update_neighbor(self, _index):
-        index = faiss.IndexFlatL2(14)
-        index.add(self.weighted_data[self.valid_mask])
-
-        _query = self.weighted_data[_index]
-        
-        distance, indices = index.search(_query, 2) # this is local indices
-
-        for index, dist, neighbor in zip(_index, distance, self.index[self.valid_mask][indices]):
-            if not self.valid_mask[index]: 
-                self.neighbor[index] = -1
-                continue
-            # print(index, dist, neighbor, self.valid_mask[index])
-            self.neighbor[index] = neighbor[1]
-
-            # update heapq
-            heapq.heappush(self.pq, (np.prod(self.scales_global[index]), dist[1], index, neighbor[1]))
 
     def simplify(self, num_points, merge_method='merge_gaussian_moments'):
         merge_list = []

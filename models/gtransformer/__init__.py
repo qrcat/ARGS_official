@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class GTransformer(LightningModule):
-    def __init__(self, input_dim, cond_dim, embedding_dim, num_layers, num_heads, dropout):
+    def __init__(self, input_dim, cond_dim, embedding_dim, dense_dim, num_layers, num_heads, dropout):
         super(GTransformer, self).__init__()
         self.embedding_dim = embedding_dim
 
@@ -30,8 +30,13 @@ class GTransformer(LightningModule):
             nn.LeakyReLU(),
             nn.Linear(embedding_dim, embedding_dim),
             nn.LeakyReLU(),
-            nn.Linear(embedding_dim, 2*14)
+            nn.Linear(embedding_dim, dense_dim)
         )
+
+        for block in self.blocks:
+            block.sa.proj.weight.data.mul_(0.01)
+            block.ca.proj.weight.data.mul_(0.01)
+            block.ffn.ffn[-1].weight.data.mul_(0.01)
 
     def forward(
             self, 
@@ -83,17 +88,14 @@ class GTransformer(LightningModule):
             else:
                 dense = self.dense_head(feat)
 
-            dense     = dense.view(-1, 2, 14)
-
         return split, dense
 
 
 class MaskedTransformer(GTransformer):
-    def __init__(self, input_dim, cond_dim, embedding_dim, num_layers, num_heads, dropout):
-        super().__init__(input_dim, cond_dim, embedding_dim, num_layers, num_heads, dropout)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        self.f_uncond        = nn.Embedding(1, embedding_dim) # this is used for unconditional training
-        self.dense_head[-1]  = nn.Linear(embedding_dim, input_dim)
+        self.f_uncond        = nn.Embedding(1, self.embedding_dim) # this is used for unconditional training
 
     def forward(
             self, 
@@ -142,9 +144,6 @@ class MaskedTransformer(GTransformer):
                 )
             split  = self.split_head(feat)
 
-            if split_mask is not None:
-                dense = self.dense_head(feat[split_mask])
-            else:
-                dense = self.dense_head(feat)
+            recon = self.dense_head(feat)
 
-        return split, dense
+        return feat, split, recon

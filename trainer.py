@@ -14,8 +14,9 @@ except:
     warnings.warn('torch_scatter is not installed')
 
 
+
 class ARGSModel(GTransformer):
-    def __init__(self, label_smooth=0.1, pos_weight=1.0, scatter_bce=False, scatter_mse=False, *args, **kwargs):
+    def __init__(self, warmup_rate=0.1, label_smooth=0.1, pos_weight=1.0, scatter_bce=False, scatter_mse=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
     
@@ -33,6 +34,7 @@ class ARGSModel(GTransformer):
                 None, None, 
                 prev_gs_split
             )
+            dense = dense.view(-1, 2, 14)
 
             split_label = prev_gs_split[..., None].float().clip(min=self.hparams.label_smooth, max=1.0-self.hparams.label_smooth).cuda()
             pos_weight  = torch.tensor([self.hparams.pos_weight], device=split.device)
@@ -44,10 +46,16 @@ class ARGSModel(GTransformer):
                 pos_weight=pos_weight
             )
 
+            # loss_ce = torch.nn.functional.cross_entropy(dense, next_gs, reduction=reduction)
+            # loss = loss_bce + loss_ce
+            # acc = (dense.argmax(dim=1)==next_gs).float().mean()
+
             loss_mse_xyz = torch.norm(dense[...,   :3]-next_gs[...,   :3], dim=1) # [T, 2, 14] -> [T, 2]
-            loss_mse_opa = torch.nn.functional.l1_loss(torch.sigmoid(dense[...,  3:4]), next_gs[...,  3:4], reduction=reduction)
+            # loss_mse_opa = torch.nn.functional.l1_loss(torch.sigmoid(dense[...,  3:4]), next_gs[...,  3:4], reduction=reduction)
+            loss_mse_opa = torch.nn.functional.l1_loss(dense[...,  3:4], next_gs[...,  3:4], reduction=reduction)
             loss_mse_rgb = torch.nn.functional.l1_loss(dense[...,  4:7], next_gs[...,  4:7], reduction=reduction)
-            loss_mse_sca = torch.nn.functional.l1_loss(torch.exp(dense[..., 7:10]), next_gs[..., 7:10], reduction=reduction)
+            # loss_mse_sca = torch.nn.functional.l1_loss(dense[..., 7:10], torch.log(next_gs[..., 7:10]), reduction=reduction)
+            loss_mse_sca = torch.nn.functional.l1_loss(dense[..., 7:10], next_gs[..., 7:10], reduction=reduction)
             loss_mse_qut = torch.sum(normalize(dense[..., 10:], dim=-1) * next_gs[..., 10:], dim=-1)
             loss_mse_qut = 1 - (loss_mse_qut ** 2)
 
@@ -66,11 +74,15 @@ class ARGSModel(GTransformer):
             # weight is compute by std
             loss_mse = 1.0*loss_mse_xyz + 0.2*loss_mse_opa + 1.0*loss_mse_rgb + 1.0*loss_mse_sca + 0.4*loss_mse_qut
             
-            loss = 0.7*loss_bce+0.3*loss_mse
+            loss = 0.0*loss_bce+1.0*loss_mse
+
+        # breakpoint()
 
         self.log_dict(
             {
                 "train/loss_bce": loss_bce,
+                # "train/loss_ce": loss_ce,
+                # "train/acc": acc,
                 "train/loss_mse": loss_mse,
                 "train/loss_mse_xyz": loss_mse_xyz,
                 "train/loss_mse_opa": loss_mse_opa,
@@ -85,6 +97,12 @@ class ARGSModel(GTransformer):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx) -> None:
+        # if self.trainer.local_rank == 0:
+        #     breakpoint()
+        # torch.distributed.barrier()
+        
+        if batch is None: return
+        
         now_gs, next_gs_split, new_gs, condition, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch, batch_new_gs, batch_size = batch
 
         with autocast('cuda'):
@@ -116,7 +134,7 @@ class ARGSModel(GTransformer):
                 "val/loss_mse_rgb": loss_mse_rgb,
                 "val/loss_mse_sca": loss_mse_sca,
                 "val/loss_mse_qut": loss_mse_qut,
-            }, batch_size=batch_size, sync_dist=True,
+            }, batch_size=batch_size,
         )
 
     @torch.no_grad()
@@ -160,7 +178,7 @@ class ARGSModel(GTransformer):
             "lr_scheduler": {
                 "scheduler": CosineWarmupScheduler(
                     optimizer, 
-                    self.trainer.max_epochs//10, 
+                    int(self.trainer.max_epochs * self.hparams.warmup_rate), 
                     self.trainer.max_epochs,
                 ),
             },
@@ -183,7 +201,7 @@ class ARGSModel(GTransformer):
 
 
 class MaskedGSModel(MaskedTransformer):
-    def __init__(self, label_smooth=0.1, pos_weight=1.0, scatter_bce=False, scatter_mse=False, *args, **kwargs):
+    def __init__(self, warmup_rate=0.1, label_smooth=0.1, pos_weight=1.0, scatter_bce=False, scatter_mse=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
 
@@ -194,13 +212,13 @@ class MaskedGSModel(MaskedTransformer):
             batch_p_gs, batch_n_gs, batch_size
         ) = batch_p_gs
 
-        ratio = max(0.1, min(0.5, self.trainer.current_epoch / self.trainer.max_epochs))
+        mask_ratio = max(0.1, min(0.5, (self.trainer.current_epoch+1) / self.trainer.max_epochs))
 
-        mask = torch.rand(*prev_gs.shape[:-1], device=prev_gs.device) < ratio
-        gsgt = prev_gs[mask]
+        mask = torch.rand(*prev_gs.shape[:-1], device=prev_gs.device) < mask_ratio
+        gsgt = prev_gs
 
         with autocast('cuda'):
-            split, dense = self.forward(
+            _, split, dense = self.forward(
                 prev_gs, prev_gs[..., :3], condition, 
                 cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, 
                 None, None, 
@@ -243,6 +261,7 @@ class MaskedGSModel(MaskedTransformer):
 
         self.log_dict(
             {
+                "train/mask_ratio": mask_ratio,
                 "train/loss_bce": loss_bce,
                 "train/loss_mse": loss_mse,
                 "train/loss_mse_xyz": loss_mse_xyz,
@@ -301,7 +320,7 @@ class MaskedGSModel(MaskedTransformer):
             "lr_scheduler": {
                 "scheduler": CosineWarmupScheduler(
                     optimizer, 
-                    self.trainer.max_epochs//10, 
+                    int(self.trainer.max_epochs * self.hparams.warmup_rate), 
                     self.trainer.max_epochs,
                 ),
             },

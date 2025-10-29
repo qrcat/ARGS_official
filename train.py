@@ -1,5 +1,5 @@
 from trainer import MaskedGSModel, ARGSModel
-from models.data import BatchDataModule
+from models.data import BatchData, BatchDataModule
 from models.gtransformer import GTransformer
 
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -12,8 +12,13 @@ import argparse
 
 
 def init_dataset():
+    if args.build_data:
+        BatchData.build(args.dataset, args.pattern, args.meta_file, True, False)
+    torch.distributed.barrier()
     return BatchDataModule(
-        args.dataset, 
+        args.dataset,
+        args.pattern,
+        args.meta_file,
         add_noise_on_data=not args.not_noise_on_data,
         no_check_meta_len=args.no_check_meta_len,
         post_load=args.load_disk,
@@ -27,44 +32,69 @@ def init_model(args):
     import configs
 
     config = getattr(configs, args.model)
-
+    config['input_dim'] = 14
+    config['cond_dim'] = 768
     if args.method == 'mask':
-        model = MaskedGSModel(cond_dim=768, **config)
+        config['dense_dim'] = 14
+    elif args.method == 'args_ce':
+        config['dense_dim'] = 2*14*256
     else:
-        model = ARGSModel(cond_dim=768, **config)
+        config['dense_dim'] = 2*14
+    config['pos_weight'] = args.pos_weight
+    config['warmup_rate'] = args.warmup_rate
+    config['scatter_bce'] = args.scatter_bce
+    config['scatter_mse'] = args.scatter_mse
+    config['label_smooth'] = args.label_smooth
+
+    
+    if args.method == 'mask':
+        model = MaskedGSModel(**config)
+    else:
+        model = ARGSModel(**config)
 
     return model
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
+    parser_model = parser.add_argument_group('model')
     # model
-    parser.add_argument('--model', type=str, default='base_s_768', choices=['base_s_192', 'base_s_384', 'base_s_768'])
-    parser.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args'])
-    parser.add_argument('--pop_key', action='store_true')
+    parser_model.add_argument('--model', type=str, default='base_s_768', choices=['base_t_96', 'base_s_192', 'base_s_384', 'base_s_768', 'base_m_384', 'base_m_768', 'base_l_768', 'base_m_1536', 'base_l_1536'])
+    parser_model.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args', 'mask_ce'])
+    parser_model.add_argument('--pop_key', action='store_true')
+    parser_model.add_argument('--warmup_rate', type=float, default=0.1)
+    parser_model.add_argument('--label_smooth', type=float, default=0.2)
+    parser_model.add_argument('--pos_weight', type=float, default=1.0, help='positive examples weight for bce loss.')
+    parser_model.add_argument('--scatter_bce', action='store_true', help='scatter bce loss by batch.')
+    parser_model.add_argument('--scatter_mse', action='store_true', help='scatter mse loss by batch.')
     # train
-    
-    parser.add_argument('--max_epochs', type=int, default=100)
-    parser.add_argument('--log_dir', type=str, default="log")
-    parser.add_argument('--devices', type=int, nargs='+', default=[0])
-    parser.add_argument('--f32precision', type=str, default='medium', choices=['high', 'medium'])
-    parser.add_argument('--gradient_clip_val', type=float, default=1.0)
-    parser.add_argument('--accumulate_grad_batches', type=int, default=1)
+    parser_train = parser.add_argument_group('train')
+    parser_train.add_argument('--max_epochs', type=int, default=100)
+    parser_train.add_argument('--log_dir', type=str, default="log")
+    parser_train.add_argument('--devices', type=int, nargs='+', default=[0])
+    parser_train.add_argument('--f32precision', type=str, default='high', choices=['high', 'medium'])
+    parser_train.add_argument('--gradient_clip_val', type=float)
+    parser_train.add_argument('--accumulate_grad_batches', type=int, default=1)
     # dataset
-    parser.add_argument('--dataset', type=str, default="../airplane_pkl")
-    parser.add_argument('--not_noise_on_data', action='store_true')
-    parser.add_argument('--no_check_meta_len', action='store_true')
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--num_workers', type=int, default=32)
-    parser.add_argument('--train_split', type=float, default=0.99)
-    parser.add_argument('--load_disk', action='store_true', help='load data from disk online')
-    parser.add_argument('--shuffle', action='store_true')
+    parser_datas = parser.add_argument_group('dataset')
+    parser_datas.add_argument('--dataset', type=str, default="../airplane_pkl")
+    parser_datas.add_argument('--pattern', type=str, default="*/point_cloud.pkl")
+    parser_datas.add_argument('--meta_file', type=str, default="metas.json")
+    parser_datas.add_argument('--build_data', action='store_true')
+    
+    parser_datas.add_argument('--not_noise_on_data', action='store_true')
+    parser_datas.add_argument('--no_check_meta_len', action='store_true')
+    parser_datas.add_argument('--batch_size', type=int, default=8)
+    parser_datas.add_argument('--num_workers', type=int, default=32)
+    parser_datas.add_argument('--train_split', type=float, default=0.99)
+    parser_datas.add_argument('--load_disk', action='store_true', help='load data from disk online')
+    parser_datas.add_argument('--shuffle', action='store_true')
     # checkpoint
-    parser.add_argument('--checkpoint', type=str, default=None)
-    # eval
-    parser.add_argument('--eval', action='store_true')
-    # logger
-    parser.add_argument('--logger', choices=['none', 'wandb', 'tensorboard', 'wd', 'tb'], default='none')
+    parser_check = parser.add_argument_group('checkpoint')
+    parser_check.add_argument('--checkpoint', type=str, default=None)
+    parser_check.add_argument('--logger', choices=['none', 'wandb', 'tensorboard', 'wd', 'tb'], default='none')
+    parser_check.add_argument('--eval', action='store_true')
 
     args = parser.parse_args()
 
@@ -77,12 +107,10 @@ if __name__ == "__main__":
             logger = None
         elif args.logger in ['wandb', 'wd']:
             from lightning.pytorch.loggers import WandbLogger
-
-            logger = WandbLogger(name=f"{datetime.datetime.now().strftime(r'%Y.%m.%d_%H:%M:%S')}", project=f'args_{args.method}')
+            logger = WandbLogger(save_dir=args.log_dir, name=f"{datetime.datetime.now().strftime(r'%Y.%m.%d_%H:%M:%S')}", project=f'args_{args.method}')
         elif args.logger in ['tensorboard', 'tb']:
             from lightning.pytorch.loggers import TensorBoardLogger
-
-            logger = TensorBoardLogger(save_dir=args.log_dir, name="args")
+            logger = TensorBoardLogger(save_dir=args.log_dir, name=f'args_{args.method}')
 
         checkpoint_callback = ModelCheckpoint(
             every_n_epochs=1,
@@ -108,10 +136,10 @@ if __name__ == "__main__":
             precision=32,
             # strategy="deepspeed_stage_1",
             # strategy="ddp_find_unused_parameters_true",
-            strategy="ddp",
+            # strategy="ddp",
         )
         if args.method == 'mask2args':
-            state_dict = torch.load(args.checkpoint)['state_dict']
+            state_dict = torch.load(args.checkpoint, weights_only=False)['state_dict']
             if args.pop_key:
                 poppattern = ['f_uncond', 'dense_head']
                 for key in list(state_dict.keys()):
@@ -132,9 +160,81 @@ if __name__ == "__main__":
         from models.gtransformer import GTransformer
         from utils.io import activated_gs2gs, save_ply
         from utils.local import to_global
+        from utils.shs import RGB2SH
+
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler, MinMaxScaler
         import torch
         import configs
+        dataset = SimpleData('point_cloud.pkl')
 
+        config = getattr(configs, args.model)
+
+        model = init_model(args)
+        model.load_state_dict(torch.load(args.checkpoint)['state_dict'])
+        model.eval()
+        model.cuda()
+
+        breakpoint()
+
+        scaler_standard = None
+        pca = None
+        scaler_minmax = None
+
+        
+        for level in range(len(dataset)-1, -1, -1):
+            prev_gs, _, _, condition = dataset[level]
+            
+            mask = None
+            # mask = torch.rand(*prev_gs.shape[:-1], device=prev_gs.device) < 0.25
+
+            # now_gs_save = activated_gs2gs(prev_gs[mask])
+            # save_ply(f'{level}-masked.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
+
+            cu_seqlens_kv = torch.tensor([0, condition.shape[0]], dtype=torch.int32)
+            cu_seqlens_gs = torch.tensor([0, prev_gs.shape[0]], dtype=torch.int32)
+
+            prev_gs, condition, cu_seqlens_gs, cu_seqlens_kv = prev_gs.cuda(), condition.cuda(), cu_seqlens_gs.cuda(), cu_seqlens_kv.cuda()
+
+            with torch.no_grad():
+                feat, split, recon = model(
+                    prev_gs, prev_gs[..., :3], condition, 
+                    cu_seqlens_gs, cu_seqlens_kv, cu_seqlens_gs[-1], cu_seqlens_kv[-1], 
+                    None, None, 
+                    mask
+                )
+            feat = prev_gs
+            if scaler_standard is None:
+                scaler_standard = StandardScaler()
+                feat_scaled = scaler_standard.fit_transform(feat.cpu().numpy())
+            else:
+                feat_scaled = scaler_standard.transform(feat.cpu().numpy())
+            if pca is None:
+                pca = PCA(n_components=3)
+                feat_pca = pca.fit_transform(feat_scaled)
+            else:
+                feat_pca = pca.transform(feat_scaled)
+            if scaler_minmax is None:
+                scaler_minmax = MinMaxScaler()
+                feat_pca_scaled = scaler_minmax.fit_transform(feat_pca)
+            else:
+                feat_pca_scaled = scaler_minmax.transform(feat_pca)
+
+            # recon[..., 3:4] = torch.sigmoid(recon[...,  3:4])
+            # recon[..., 4:7] = torch.from_numpy(RGB2SH(feat_pca_scaled))
+            # recon[..., 7:10] = torch.exp(recon[..., 7:10])
+            recon = prev_gs
+            prev_gs[..., 4:7] = torch.from_numpy(RGB2SH(feat_pca_scaled))
+
+            now_gs_save = activated_gs2gs(recon)
+            save_ply(f'{level}-recon.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
+            # breakpoint()
+        breakpoint()
+        now_gs_save = activated_gs2gs(now_gs)
+        save_ply(f'{before}to{before+level+1}.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
+
+
+        breakpoint()
 
         dataset = SimpleData('point_cloud.pkl')
 
@@ -148,24 +248,24 @@ if __name__ == "__main__":
         before = 5
         upstep = 1
 
-        now_gs, next_gs_split, new_gs, embedd = dataset[before]
+        now_gs, next_gs_split, new_gs, condition = dataset[before]
 
         now_gs_save = activated_gs2gs(now_gs)
         save_ply(f'{before}.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
 
-        cu_seqlens_kv = torch.tensor([0, embedd.shape[0]], dtype=torch.int32)
-        for i in range(upstep):
+        cu_seqlens_kv = torch.tensor([0, condition.shape[0]], dtype=torch.int32)
+        for level in range(upstep):
             cu_seqlens_gs = torch.tensor([0, now_gs.shape[0]], dtype=torch.int32)
 
-            now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv = now_gs.cuda(), next_gs_split.cuda(), new_gs.cuda(), embedd.cuda(), cu_seqlens_gs.cuda(), cu_seqlens_kv.cuda()
+            now_gs, next_gs_split, new_gs, condition, cu_seqlens_gs, cu_seqlens_kv = now_gs.cuda(), next_gs_split.cuda(), new_gs.cuda(), condition.cuda(), cu_seqlens_gs.cuda(), cu_seqlens_kv.cuda()
 
             with torch.no_grad():
-                split, dense = model(now_gs, now_gs[..., :3], embedd, cu_seqlens_gs, cu_seqlens_kv, cu_seqlens_gs[-1], cu_seqlens_kv[-1])
+                split, recon = model(now_gs, now_gs[..., :3], condition, cu_seqlens_gs, cu_seqlens_kv, cu_seqlens_gs[-1], cu_seqlens_kv[-1])
 
             split_mask = torch.squeeze(split > 0, dim=1)
             now_gs_split = now_gs[split_mask]
             
-            new_gs_pred = dense[split_mask].view(-1, 2, 14)
+            new_gs_pred = recon[split_mask].view(-1, 2, 14)
             new_gs_pred = to_global(now_gs_split, new_gs_pred)
             
             if split_mask.all():
@@ -174,8 +274,8 @@ if __name__ == "__main__":
                 now_gs = now_gs[~split_mask]
                 now_gs = torch.cat([now_gs, new_gs_pred.view(-1, 14)], dim=0)
             else:
-                i -= 1
+                level -= 1
                 break
 
         now_gs_save = activated_gs2gs(now_gs)
-        save_ply(f'{before}to{before+i+1}.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
+        save_ply(f'{before}to{before+level+1}.ply', now_gs_save[..., :3], now_gs_save[..., 3:4], now_gs_save[..., 4:7], now_gs_save[..., 7:10], now_gs_save[..., 10:14])
