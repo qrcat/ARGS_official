@@ -1,17 +1,22 @@
 from utils.local import to_local
+from utils.quantize import Quantize
 
 import json
 import torch
 import pickle
 import numpy as np
 import warnings
+
 from pathlib import Path
 from tqdm import tqdm
+from joblib import delayed, Parallel
 from torch.utils.data import Dataset, DataLoader, random_split
 from lightning import LightningDataModule
-
+from lightning.pytorch.utilities import rank_zero_only
 
 class SimpleData(Dataset):
+    quantize = Quantize()
+
     def __init__(self, path='data.pkl', thres=0.05, apply_noise=True):
         self.apply_noise = apply_noise
         # 读取这个文件
@@ -45,8 +50,8 @@ class SimpleData(Dataset):
         next_gs_split = torch.tensor(next_gs_split)
             
         new_gs_gt = torch.from_numpy(self.data[next_gs_index]).float()
-        new_gs = to_local(now_gs[next_gs_split], new_gs_gt)
-            
+        # new_gs = to_local(now_gs[next_gs_split], new_gs_gt)
+        new_gs = self.quantize(new_gs_gt)
         # condition
         cond = self.cond[np.random.randint(0, 8, 1)][0]
         cond = torch.from_numpy(cond).float()
@@ -78,10 +83,10 @@ class SimpleData(Dataset):
     
     @staticmethod
     def collate_fn(batch):
-        now_gs = torch.cat([data[0] for data in batch])
-        next_gs_split = torch.cat([data[1] for data in batch])
-        new_gs = torch.cat([data[2] for data in batch])
-        embedd = torch.cat([data[3] for data in batch])
+        prev_gs       = torch.cat([data[0] for data in batch])
+        prev_gs_split = torch.cat([data[1] for data in batch])
+        next_gs       = torch.cat([data[2] for data in batch])
+        condition     = torch.cat([data[3] for data in batch])
 
         cu_seqlens_gs = torch.cumsum(
             torch.tensor([0]+[data[0].shape[0] for data in batch]), dim=0
@@ -107,7 +112,7 @@ class SimpleData(Dataset):
 
         batch_size = len(bincount_gs)
 
-        return now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch_gs, batch_new_gs, batch_size
+        return prev_gs, prev_gs_split, next_gs, condition, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch_gs, batch_new_gs, batch_size
 
     @staticmethod
     def collate_fn_BLC(batch):
@@ -158,65 +163,68 @@ class SimpleData(Dataset):
 
         return now_gs, next_gs_split, new_gs, embedd, cu_seqlens_gs, cu_seqlens_kv, maxseq_gs, maxseq_kv, batch_gs, batch_new_gs, batch_size
 
-
-
 class BatchData(Dataset):
     def __init__(
             self, 
-            dir='data/airplane_pkl', pattern="*/point_cloud.pkl", 
+            dir='data/airplane_pkl', pattern="*/point_cloud.pkl", meta_file='metas.json',
             post_load=True,   # don't load data at init
             apply_noise=True, # add noise to data
             no_check_meta_len=False,
         ):
         self.dir = Path(dir)
-        self.data = []
-        self.lens = []
 
         self.apply_noise = apply_noise
 
         assert self.dir.exists()
         
-        data = list(self.dir.glob(pattern))
-
-        meta = self.dir / 'metas.json'
+        meta = self.dir / meta_file
         if meta.exists():
             # read metas
             with meta.open('r') as f:
                 self.meta = json.load(f)
-
-            if not no_check_meta_len and len(self.meta['data']) != len(data):
-                self.meta = None
-            else:
-                self.data = self.meta['data']
-                self.lens = self.meta['lens']
         else:
-            self.meta = None
+            raise FileNotFoundError(f'{meta} not found')
         
-        if not self.meta or not post_load:
-            self.meta = {'data': [], 'lens': [], 'size_per_sample': []}
-            
-            for path in tqdm(data):
-                data = SimpleData(path, apply_noise=self.apply_noise)
-                self.meta['data'].append(path.absolute().as_posix())
-                self.meta['lens'].append(len(data))
-
-                if not post_load:
-                    self.data.append(data)
-                else:
-                    self.data.append(path)
-            
-            with meta.open('w') as f:
-                json.dump(self.meta, f)
-        else:
-            self.data = self.meta['data']
-        
+        self.data = self.meta['data']
         self.lens = self.meta['lens']
 
         self.cum_lens = np.cumsum([0] + self.lens)
         self.idx2bidx = torch.arange(
             len(self.lens)
         ).repeat_interleave(torch.tensor(self.lens, dtype=torch.int32))
+    
+    @rank_zero_only
+    @staticmethod
+    def build(dir: str, pattern: str, meta: str = 'metas.json', post_load: bool = False, apply_noise: bool = False):
+        dir = Path(dir)
+        data = []
+        lens = []
 
+        assert dir.exists()
+        
+        data = list(dir.glob(pattern))
+
+        file = dir / meta
+
+        meta = {'data': [], 'lens': [], 'size_per_sample': []}
+
+        def get(path):
+            data = SimpleData(path, apply_noise=apply_noise)
+            return path.absolute().as_posix(), len(data)
+        
+        results = Parallel(n_jobs=3)(delayed(get)(path) for path in tqdm(data))
+
+        data = [x[0] for x in results]
+        lens = [x[1] for x in results]
+
+        meta['data'] = data
+        meta['lens'] = lens
+
+        with file.open('w') as f:
+            json.dump(meta, f)
+
+        return meta, data, lens
+    
     def __len__(self):
         return self.cum_lens[-1]
     
@@ -234,7 +242,9 @@ class BatchData(Dataset):
 class BatchDataModule(LightningDataModule):
     def __init__(
             self, 
-            dir='data/airplane_pkl', 
+            dir='data/airplane_pkl',
+            pattern="*/point_cloud.pkl",
+            meta_file='metas.json',
             add_noise_on_data=True,
             no_check_meta_len=False,
             post_load=True, 
@@ -248,10 +258,15 @@ class BatchDataModule(LightningDataModule):
         
     def setup(self, stage):
         if Path(self.hparams.dir).is_file():
-            dataset = SimpleData(self.hparams.dir, apply_noise=self.hparams.add_noise_on_data)
+            dataset = SimpleData(
+                self.hparams.dir, 
+                apply_noise=self.hparams.add_noise_on_data
+            )
         else:
             dataset = BatchData(
-                self.hparams.dir, 
+                self.hparams.dir,
+                self.hparams.pattern,
+                self.hparams.meta_file,
                 post_load=self.hparams.post_load, 
                 apply_noise=self.hparams.add_noise_on_data,
                 no_check_meta_len=self.hparams.no_check_meta_len,

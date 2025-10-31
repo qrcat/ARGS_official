@@ -5,7 +5,7 @@ from pgs import PGSMoments, PGSMomentSample
 from scipy.spatial.transform import Rotation
 import numpy as np
 
-pgs = PGSMoments.load("airplane-0.ply")
+pgs = PGSMoments.load("point_cloud.ply")
 # pgs = PGSMomentSample.load("point_cloud.ply")
 merge_list = pgs.simplify(1)
 merge_list = merge_list[::-1]
@@ -15,40 +15,48 @@ for merge in merge_list:
     tmap[merge['mixed_id']] = [i if isinstance(i, int) else i.item() for i in [merge['source_id'], merge['target_id']]]
 
 root = merge_list[0]['mixed_id']
-# 获得分层的GS
-level = 0
+prev_gs_to_split = [root]
 count = []
-sequence, to_split, split_next, split_mask = [], [root], [], []
+sequence, split_gs, split_bl = [], [], []
 output = {}
 while True:
-    to_split_next = []
+    next_gs_to_split = []
 
-    count.append(len(to_split))
+    count.append(len(prev_gs_to_split))
 
-    for index in to_split:
+    for index in prev_gs_to_split:
         sequence.append(index)
         if tmap.get(index):
-            split_next.append([tmap[index][0], tmap[index][1]])
-            split_mask.append(True)
+            split_gs.append([tmap[index][0], tmap[index][1]])
+            split_bl.append(True)
 
-            to_split_next.append(tmap[index][0])
-            to_split_next.append(tmap[index][1])
+            next_gs_to_split.append(tmap[index][0])
+            next_gs_to_split.append(tmap[index][1])
         else:
-            split_next.append([index, index]) # 不分裂，填充自己的特征
-            split_mask.append(False)
+            split_gs.append([index, index]) # 不分裂，填充自己的特征
+            split_bl.append(False)
     
-    if len(to_split_next) == 0: # 没有分裂的gs
+    if len(next_gs_to_split) == 0: # 没有分裂的gs
         break
 
-    to_split = to_split_next
+    prev_gs_to_split = next_gs_to_split
 
 cumsum = np.cumsum([0]+count[:-1])
 mask_value = cumsum.repeat(count)
 
-attn_mask = np.zeros((len(sequence), len(sequence))) # N, N
-attn_mask[mask_value:] = True
-# usage
+output['data'] = pgs._data
+output['count'] = np.array(count)
+output['cumsum'] = cumsum
+output['sequence'] = np.array(sequence)
+output['split_gs'] = np.array(split_gs)
+output['split_bl'] = np.array(split_bl)
 
+
+import pickle
+with open('data_block.pkl', 'wb') as f:
+    pickle.dump(output, f)
+# usage
+import torch
 mask_value = torch.from_numpy(mask_value).cuda()
 
 # torch > 2.5.1

@@ -173,7 +173,7 @@ class PGSMoments(ProgressiveGaussianSimplifierBase):
     def quats_global(self):
         return self._data[:self.last_index, 10:]
 
-    def simplify(self, num_points, merge_method='merge_gaussian_moments'):
+    def simplify(self, num_points, merge_method='merge_gaussian_moments_ub'):
         merge_list = []
 
         if self.used_size <= num_points: return merge_list
