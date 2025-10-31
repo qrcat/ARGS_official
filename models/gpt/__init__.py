@@ -12,7 +12,7 @@ class GPT(LightningModule):
         super(GPT, self).__init__()
         self.embedding_dim = embedding_dim
 
-        self.embedding = nn.Embedding(256*5, vocal_dim)
+        self.embedding = nn.Embedding(256*5+1, vocal_dim)
 
         self.proj_x    = nn.Linear(vocal_dim*3, embedding_dim)
         self.proj_o    = nn.Linear(vocal_dim*1, embedding_dim)

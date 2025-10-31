@@ -41,10 +41,10 @@ class ARGSModel(GPT):
                 pos_weight=pos_weight
             )
 
-            loss_ce = torch.nn.functional.cross_entropy(dense, split_gs)
+            loss_ce = torch.nn.functional.cross_entropy(dense, split_gs, ignore_index=256)
 
             loss = loss_bce + loss_ce
-            acc_split = (dense.argmax(dim=1)==split_gs).float().mean()
+            acc_split = ((split>0)==split_bool).float().mean()
             acc_dense = (dense.argmax(dim=1)==split_gs).float().mean()
 
         self.log_dict(

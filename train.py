@@ -20,6 +20,7 @@ def init_dataset():
         max_len=4097, # 16384
         pre_load=args.preload_in_memory, 
         save_meta=args.save_meta_in_disk, 
+        padding_value=256,
         local=args.local_coords_data, 
         apply_noise=args.add_noise_on_data, 
         apply_quantize=False, 

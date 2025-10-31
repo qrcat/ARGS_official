@@ -9,6 +9,7 @@ import warnings
 
 from pathlib import Path
 from tqdm import tqdm
+from torch.nn.utils.rnn import pad_sequence
 from joblib import delayed, Parallel
 from torch.utils.data import Dataset, DataLoader, random_split
 from lightning import LightningDataModule
@@ -19,12 +20,14 @@ class CEData(Dataset):
 
     def __init__(
             self, 
-            path='data_block.pkl', 
+            path='data_block.pkl',
+            padding_value=256,
             local=False, 
             apply_noise=True,  
             apply_quantize=True,
             return_indices=True
         ):
+        self.padding_value = padding_value
         self.local = local
         self.apply_noise = apply_noise
         self.apply_quantize = apply_quantize
@@ -38,14 +41,23 @@ class CEData(Dataset):
         self.mask_value = self.cumsum.repeat(self.count)
 
     def __len__(self):
-        return 1
+        return len(self.sequence)
     
-    def __getitem__(self, idx):
-
-        sequence = torch.from_numpy(self.data[self.sequence]).float() # [N, 14]
+    def __getitem__(self, idx):        
+        sequence = torch.from_numpy(self.data[self.sequence[:idx+1]]).float() # [N, 14]
         position = sequence[..., :3]
-        split_gs = torch.from_numpy(self.data[self.split_gs]).float() # [N, 2, 14]
+        split_gs = torch.from_numpy(self.data[self.split_gs[:idx+1]]).float() # [N, 2, 14]
+        split_bool = torch.from_numpy(self.split_bl[:idx+1])[..., None] # [N, 1]
+        mask_value = torch.from_numpy(self.mask_value[:idx+1])
         
+        masking_item = torch.arange(idx+1)>=mask_value[-1]
+        
+        # for the item > mask_value, set split_bool to False
+        split_bool[masking_item] = False
+
+        if not self.return_indices:
+            raise NotImplementedError
+            
         if self.apply_noise:
             raise NotImplementedError
         
@@ -61,16 +73,20 @@ class CEData(Dataset):
             sequence[..., 10:14] += 256 * 4
 
             split_gs = self.quantize.get_indices(split_gs)
+            # for the unsplit token, set the target to padding_value
+            split_gs[~split_bool[..., 0]] = self.padding_value
+
+            if idx >= len(self):
+                warnings.warn(f'idx {idx} out of range')
         
         if not self.return_indices and self.apply_quantize:
             sequence = self.quantize(sequence)
             split_gs = self.quantize(split_gs)
 
-        split_bool = torch.from_numpy(self.split_bl)[..., None] # [N, 1]
-
-        mask_value = torch.from_numpy(self.mask_value)
-
         return sequence, position, split_gs, split_bool, mask_value
+
+    def __repr__(self) -> str:
+        return f"CEData({self.path}, seqlen:{len(self.sequence)})"
 
     def collate_fn(self, batch):
         return batch
@@ -140,16 +156,16 @@ class BatchCEData(Dataset):
     
     def __getitem__(self, idx):
         if self.data is None:
-            return CEData(self.meta[idx], **self.cedata_args)[0]
+            return CEData(self.meta[idx], **self.cedata_args)[self.max_len]
         else:
-            return self.data[idx][0]
+            return self.data[idx][self.max_len]
 
-    def collate_fn(self, batch):
-        sequence   = torch.stack([data[0][:self.max_len] for data in batch])
-        position   = torch.stack([data[1][:self.max_len] for data in batch])
-        split_gs   = torch.stack([data[2][:self.max_len] for data in batch])
-        split_bool = torch.stack([data[3][:self.max_len] for data in batch])
-        mask_value = torch.stack([data[4][:self.max_len] for data in batch])
+    def collate_fn(self, batch):    
+        sequence   = pad_sequence([data[0] for data in batch], True, 256*5)
+        position   = pad_sequence([data[1] for data in batch], True, 0.0)
+        split_gs   = pad_sequence([data[2] for data in batch], True, 256)
+        split_bool = pad_sequence([data[3] for data in batch], True, False)
+        mask_value = pad_sequence([data[4] for data in batch], True, sequence.shape[1])
 
         return sequence, position, split_gs, split_bool, mask_value
 
