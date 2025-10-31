@@ -72,7 +72,7 @@ class ARGSModel(GPT):
                 "params": self.parameters(),
                 "lr": 0.0001,
             },
-        ])
+        ], weight_decay=1e-4, betas=(0.9, 0.99))
         
         return {
             "optimizer": optimizer,

@@ -17,7 +17,7 @@ def init_dataset():
         dir=args.dataset, 
         pattern=args.pattern, 
         meta_file=args.meta_file, 
-        max_len=4097, # 16384
+        max_len=8192-1, # 16384
         pre_load=args.preload_in_memory, 
         save_meta=args.save_meta_in_disk, 
         padding_value=256,

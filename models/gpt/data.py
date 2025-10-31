@@ -134,7 +134,10 @@ class BatchCEData(Dataset):
         if meta.exists():
             # read metas
             with meta.open('r') as f:
-                self.meta = json.load(f)
+                try:
+                    self.meta = json.load(f)
+                except json.decoder.JSONDecodeError as e:
+                    raise Exception(f"meta file {meta} is not valid")
         else:
             self.meta = sorted(self.dir.glob(pattern))
 
@@ -149,7 +152,7 @@ class BatchCEData(Dataset):
     @rank_zero_only
     def save_meta(self, file: Path):
         with file.open('w') as f:
-            json.dump(self.meta, f)
+            json.dump([x.as_posix() for x in self.meta], f)
     
     def __len__(self):
         return len(self.meta)

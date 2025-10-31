@@ -60,7 +60,7 @@ class GPT(LightningModule):
             
             B, S, C = feat.shape
 
-            block_mask = create_block_mask(causal_mask, B=B, H=self.hparams.num_heads, Q_LEN=S, KV_LEN=S, BLOCK_SIZE=1, device="cuda")
+            block_mask = create_block_mask(causal_mask, B=B, H=1, Q_LEN=S, KV_LEN=S, BLOCK_SIZE=1, device="cuda").to(torch.bool)
 
             for block in self.blocks:
                 feat = block(feat, position, block_mask)
