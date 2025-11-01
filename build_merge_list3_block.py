@@ -38,7 +38,7 @@ def get_merge_list(data_index:int, path: Path, output_file: Path, text=''):
 
         count.append(len(prev_gs_to_split))
 
-        for index in prev_gs_to_split:
+        for index in sorted(prev_gs_to_split, key=lambda x:np.prod(pgs._data[x, 7:10]), reverse=True):
             sequence.append(index)
             if tmap.get(index):
                 split_gs.append([tmap[index][0], tmap[index][1]])
@@ -88,7 +88,7 @@ def main(args):
     output_path.mkdir(parents=True, exist_ok=True)
 
     if args.type == 'modelsplat':
-        pattern = '*/point_cloud.ply'
+        pattern = '*.ply'
     
     input_plys = sorted(Path(args.input).glob(pattern))
 
@@ -137,7 +137,7 @@ if __name__ == "__main__":
     # inputs
     parser.add_argument("--input", default="data/airplane_enhance")
     # outputs
-    parser.add_argument("--output", default="data/airplance_pkl")
+    parser.add_argument("--output", default="data/airplane_block")
     # type
     parser.add_argument("--type", default="none", choices=['none', 'modelsplat', 'shapesplat'])
     # workers

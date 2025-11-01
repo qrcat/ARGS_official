@@ -59,7 +59,7 @@ if __name__ == "__main__":
     parser_model.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args', 'mask_ce'])
     parser_model.add_argument('--pop_key', action='store_true')
     parser_model.add_argument('--warmup_rate', type=float, default=0.1)
-    parser_model.add_argument('--label_smooth', type=float, default=0.2)
+    parser_model.add_argument('--label_smooth', type=float, default=0.0)
     parser_model.add_argument('--pos_weight', type=float, default=1.0, help='positive examples weight for bce loss.')
     parser_model.add_argument('--scatter_bce', action='store_true', help='scatter bce loss by batch.')
     parser_model.add_argument('--scatter_mse', action='store_true', help='scatter mse loss by batch.')
@@ -68,6 +68,7 @@ if __name__ == "__main__":
     parser_train.add_argument('--max_epochs', type=int, default=100)
     parser_train.add_argument('--log_dir', type=str, default="log")
     parser_train.add_argument('--devices', type=int, nargs='+', default=[0])
+    parser_train.add_argument('--precision', default='16-mixed')
     parser_train.add_argument('--f32precision', type=str, default='high', choices=['high', 'medium'])
     parser_train.add_argument('--gradient_clip_val', type=float)
     parser_train.add_argument('--accumulate_grad_batches', type=int, default=1)
@@ -130,7 +131,7 @@ if __name__ == "__main__":
             # device
             devices=args.devices,
             logger=logger,
-            precision=32,
+            precision='16-mixed',
             # strategy="deepspeed_stage_1",
             # strategy="ddp_find_unused_parameters_true",
             # strategy="ddp",

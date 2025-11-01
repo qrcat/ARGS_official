@@ -24,7 +24,7 @@ while True:
 
     count.append(len(prev_gs_to_split))
 
-    for index in prev_gs_to_split:
+    for index in sorted(prev_gs_to_split, key=lambda x:np.prod(pgs._data[x, 7:10]), reverse=True):
         sequence.append(index)
         if tmap.get(index):
             split_gs.append([tmap[index][0], tmap[index][1]])

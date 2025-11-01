@@ -131,21 +131,3 @@ class SABlock(nn.Module):
         feat = feat+self.sa(feat, pos, block_mask)
         feat = feat+self.ffn(feat)
         return feat
-
-if __name__ == '__main__':
-    rope = RoPE()
-    x = torch.randn(10, 4, 8, 3) # N, H, L, C
-    y = torch.randn(10, 4, 8, 6*8)
-    z = rope(x, y)
-
-    x = torch.randn(10, 8, 64)
-
-    selfattn = SelfAttn(64, 4)
-    z = selfattn(x)
-    
-    q = torch.randn(10, 8, 1536)
-    kv = torch.randn(10, 6, 1536)
-
-    crossattn = CrossAttn(1536, 1536, 4)
-    z = crossattn(q, kv)
-    breakpoint()
