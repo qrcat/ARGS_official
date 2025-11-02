@@ -1,3 +1,5 @@
+import configs
+
 from trainer import ARGSModel
 from models.data import BatchData, BatchDataModule
 from models.gtransformer import GTransformer
@@ -8,13 +10,13 @@ from lightning.pytorch.utilities import rank_zero_only
 import torch
 import lightning as L
 import datetime
-
 import argparse
+
+import os
 
 
 def init_dataset():
-    return BatchCEDataModule(
-        dir=args.dataset, 
+    kw_args = dict(
         pattern=args.pattern, 
         meta_file=args.meta_file, 
         max_len=8192-1, # 16384
@@ -23,6 +25,7 @@ def init_dataset():
         padding_value=256,
         local=args.local_coords_data, 
         apply_noise=args.add_noise_on_data, 
+        clip_outside=True,
         apply_quantize=False, 
         return_indices=True,
         # 
@@ -31,10 +34,15 @@ def init_dataset():
         shuffle=args.shuffle,
         split=[args.train_split, 1-args.train_split],
     )
+    if os.path.isfile(args.dataset):
+        kw_args['path'] = args.dataset
+    else:
+        kw_args['dir'] = args.dataset
+    return BatchCEDataModule(
+        **kw_args
+    )
 
 def init_model(args):
-    import configs
-
     config = getattr(configs, args.model)
     config['input_dim'] = 14
     config['output_dim'] = 2*14*256
@@ -55,7 +63,7 @@ if __name__ == "__main__":
 
     parser_model = parser.add_argument_group('model')
     # model
-    parser_model.add_argument('--model', type=str, default='base_s_192', choices=['base_t_96', 'base_s_192', 'base_s_384', 'base_s_768', 'base_m_384', 'base_m_768', 'base_l_768', 'base_m_1536', 'base_l_1536'])
+    parser_model.add_argument('--model', type=str, default='base_s_192', choices=configs.__all__)
     parser_model.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args', 'mask_ce'])
     parser_model.add_argument('--pop_key', action='store_true')
     parser_model.add_argument('--warmup_rate', type=float, default=0.1)

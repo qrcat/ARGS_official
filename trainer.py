@@ -48,7 +48,7 @@ class ARGSModel(GPT):
 
         loss = 0.1 * loss_bce + loss_ce
         acc_split = ((split>0)==split_bool).float().mean()
-        acc_dense = (dense[split_bool[..., 0]].argmax(dim=1)==split_gs[split_bool[..., 0]]).float().mean()
+        acc_dense = (dense.argmax(dim=1)[split_bool[..., 0]]==split_gs[split_bool[..., 0]]).float().mean()
 
         self.log_dict(
             {
@@ -96,7 +96,7 @@ class ARGSModel(GPT):
         optimizer = torch.optim.AdamW([
             {"params": decay, "weight_decay": 1e-4},
             {"params": no_decay, "weight_decay": 0.0},
-        ], lr=5e-5, betas=(0.9, 0.98), eps=1e-8)
+        ], lr=5e-4, betas=(0.9, 0.98), eps=1e-8)
         
         return {
             "optimizer": optimizer,

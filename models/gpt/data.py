@@ -24,12 +24,15 @@ class CEData(Dataset):
             padding_value=256,
             local=False, 
             apply_noise=True,  
+            clip_outside=False,
             apply_quantize=True,
-            return_indices=True
+            return_indices=True,
+            
         ):
         self.padding_value = padding_value
         self.local = local
         self.apply_noise = apply_noise
+        self.clip_outside = clip_outside
         self.apply_quantize = apply_quantize
         self.return_indices = return_indices
         # 读取这个文件
@@ -50,10 +53,10 @@ class CEData(Dataset):
         split_bool = torch.from_numpy(self.split_bl[:idx+1])[..., None] # [N, 1]
         mask_value = torch.from_numpy(self.mask_value[:idx+1])
         
-        masking_item = torch.arange(idx+1)>=mask_value[-1]
-        
-        # for the item > mask_value, set split_bool to False
-        split_bool[masking_item] = False
+        if self.clip_outside:
+            masking_item = torch.arange(idx+1)>=mask_value[-1]
+            # for the item > mask_value, set split_bool to False
+            split_bool[masking_item] = False
 
         if not self.return_indices:
             raise NotImplementedError
@@ -197,6 +200,8 @@ class BatchCEDataModule(LightningDataModule):
         if hasattr(self.hparams, 'path'):
             if Path(self.hparams.path).is_file():
                 self.dataset = CEData(path=self.hparams.path, **ce_data_args)
+            else:
+                raise Exception(f"path {self.hparams.path} is not a file")
         elif hasattr(self.hparams, 'dir'):
             self.dataset = BatchCEData(
                 # 

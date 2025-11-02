@@ -28,7 +28,7 @@ class RoPE(nn.Module):
         embed: [..., H,...]
         """
         assert coord.shape[-1] == 3
-        assert embed.shape[hdim] % 6 == 0
+        assert embed.shape[hdim] % 3 == 0
         
         x, y, z = coord.chunk(3, dim=-1)
         

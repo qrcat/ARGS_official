@@ -88,11 +88,11 @@ def main(args):
     output_path.mkdir(parents=True, exist_ok=True)
 
     if args.type == 'modelsplat':
+        pattern = '*/point_cloud.ply'
+    elif args.type == 'none':
         pattern = '*.ply'
     
-    input_plys = sorted(Path(args.input).glob(pattern))
-
-    tqdm.write(f"Total {len(input_plys)} files")
+    input_plys = Path(args.input).glob(pattern)
 
     queue = multiprocessing.JoinableQueue()
     count = multiprocessing.Value("i", 0)
@@ -115,6 +115,8 @@ def main(args):
 
         if args.type == 'modelsplat':
             text = input_ply.parent.name.split('_')[0]
+        else:
+            text = ''
 
         queue.put((i, input_ply, output_pkl, text))
 

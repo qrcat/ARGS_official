@@ -49,6 +49,7 @@ def gs2activated_gs(*gaussian_parameters):
 
     opacities = sigmoid(opacities)
     scales = exp(scales)
+    rots = norm_quats(rots)
 
     return xyz, opacities, features_dc, scales, rots
 

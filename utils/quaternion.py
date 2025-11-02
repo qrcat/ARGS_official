@@ -173,3 +173,7 @@ def quaternion_inverse(q: torch.Tensor) -> torch.Tensor:
     # If not unit, divide by squared norm (rare; we normalize elsewhere anyway)
     denom = (q * q).sum(dim=-1, keepdim=True)
     return wxyz / torch.clamp(denom, min=1e-8)
+
+def hopf_project(q):
+    x, y, z, w = q.T
+    return np.stack([2*(x*w + y*z), 2*(y*w - x*z), 1 - 2*(x*x + y*y)], axis=1)
