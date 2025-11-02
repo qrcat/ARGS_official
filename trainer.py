@@ -48,7 +48,7 @@ class ARGSModel(GPT):
 
         loss = 0.1 * loss_bce + loss_ce
         acc_split = ((split>0)==split_bool).float().mean()
-        acc_dense = (dense.argmax(dim=1)==split_gs).float().mean()
+        acc_dense = (dense[split_bool[..., 0]].argmax(dim=1)==split_gs[split_bool[..., 0]]).float().mean()
 
         self.log_dict(
             {
