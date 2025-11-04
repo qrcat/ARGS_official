@@ -38,7 +38,9 @@ class GPT(LightningModule):
             self, 
             sequence,
             position,
-            mask_value,
+            mask_value=None,
+            past_kvs=None,
+            use_cache=False
         ):
         embed_x = self.embedding(sequence[..., :3]).flatten(-2)
         embed_o = self.embedding(sequence[..., 3:4]).flatten(-2)
@@ -54,14 +56,42 @@ class GPT(LightningModule):
 
         feat = embed_x + embed_o + embed_f + embed_s + embed_q
 
-        def causal_mask(b, h, q_idx, kv_idx):
-            return q_idx >= mask_value[b, kv_idx]
+        if use_cache:
+            block_mask = None
+        else:
+            def causal_mask(b, h, q_idx, kv_idx):
+                return q_idx >= mask_value[b, kv_idx]
+            
+            B, S, C = feat.shape
+
+            block_mask = create_block_mask(causal_mask, B=B, H=1, Q_LEN=S, KV_LEN=S, BLOCK_SIZE=1, device="cuda").to(torch.bool)
         
-        B, S, C = feat.shape
+        new_kvs = [] if use_cache else None
+        for i, block in enumerate(self.blocks):
+            past = past_kvs[i] if (past_kvs is not None and len(past_kvs) > i) else None
+            feat, new_kv = block(feat, position, block_mask, past_kv=past, use_cache=use_cache)
+            if use_cache:
+                new_kvs.append(new_kv)
 
-        block_mask = create_block_mask(causal_mask, B=B, H=1, Q_LEN=S, KV_LEN=S, BLOCK_SIZE=1, device="cuda").to(torch.bool)
+        out = self.output_head(feat)
+        if use_cache:
+            return out, new_kvs
+        else:
+            return out
 
-        for block in self.blocks:
-            feat = block(feat, position, block_mask)
+    def embed(self, sequence):
+        embed_x = self.embedding(sequence[..., :3]).flatten(-2)
+        embed_o = self.embedding(sequence[..., 3:4]).flatten(-2)
+        embed_f = self.embedding(sequence[..., 4:7]).flatten(-2)
+        embed_s = self.embedding(sequence[..., 7:10]).flatten(-2)
+        embed_q = self.embedding(sequence[..., 10:]).flatten(-2)
 
-        return self.output_head(feat)
+        embed_x = self.proj_x(embed_x)
+        embed_o = self.proj_o(embed_o)
+        embed_f = self.proj_f(embed_f)
+        embed_s = self.proj_s(embed_s)
+        embed_q = self.proj_q(embed_q)
+
+        feat = embed_x + embed_o + embed_f + embed_s + embed_q
+
+        return feat

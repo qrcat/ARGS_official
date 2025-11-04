@@ -23,7 +23,7 @@ class CEData(Dataset):
             path='data_block.pkl',
             padding_value=256,
             local=False, 
-            apply_noise=True,  
+            apply_noise=False,  
             clip_outside=False,
             apply_quantize=True,
             return_indices=True,

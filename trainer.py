@@ -21,10 +21,6 @@ class ARGSModel(GPT):
     def __init__(self, warmup_rate=0.1, label_smooth=0.1, pos_weight=1.0, scatter_bce=False, scatter_mse=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
-    
-    def on_fit_start(self) -> None:
-        self.apply(self.init_weights)
-        print('model initialized')
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
         sequence, position, split_gs, split_bool, mask_value = batch
@@ -96,7 +92,7 @@ class ARGSModel(GPT):
         optimizer = torch.optim.AdamW([
             {"params": decay, "weight_decay": 1e-4},
             {"params": no_decay, "weight_decay": 0.0},
-        ], lr=5e-4, betas=(0.9, 0.98), eps=1e-8)
+        ], lr=1e-4, betas=(0.9, 0.98), eps=1e-8)
         
         return {
             "optimizer": optimizer,

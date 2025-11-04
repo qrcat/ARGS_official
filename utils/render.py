@@ -27,7 +27,7 @@ def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.
 
     return view_mat
 
-def camera_matrix_from_angles(azimuth: float, elevation: float, radius: float = 1.0, up: np.ndarray = None) -> np.ndarray:
+def camera_matrix_from_angles(azimuth: float, elevation: float, radius: float = 1.0, up: np.ndarray = None, axis = 'z') -> np.ndarray:
     """
     根据方位角和俯仰角计算相机的视图矩阵（从相机看向原点）。
     
@@ -50,11 +50,20 @@ def camera_matrix_from_angles(azimuth: float, elevation: float, radius: float = 
     sin_a = np.sin(azimuth)
     
     # 相机位置（在球坐标系中）
-    position = np.array([
-        radius * cos_e * cos_a,
-        radius * cos_e * sin_a,
-        radius * sin_e
-    ])
+    if axis == 'x':
+        ...
+    elif axis == 'y':
+        position = np.array([
+            radius * cos_e * cos_a,
+            radius * sin_e,
+            radius * cos_e * sin_a,
+        ])
+    else:
+        position = np.array([
+            radius * cos_e * cos_a,
+            radius * cos_e * sin_a,
+            radius * sin_e
+        ])
     
     # 2. 观察方向：从相机指向原点
     lookdir = -position  # 指向原点

@@ -68,7 +68,7 @@ class SelfAttn(nn.Module):
         self.proj      = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, pos, block_mask):
+    def forward(self, feat, pos, block_mask=None, past_kv=None, use_cache=False):
         """
         feat            : [N, C] or [B, L, C]   feature
         pos             : [N, 3] or [B, L, 3]   position
@@ -80,8 +80,6 @@ class SelfAttn(nn.Module):
         x       = self.ln_prev(feat)                    # [N,  C] or [B, L,  C]
         qkv     = self.qkv(x)                           # [N, 3C] or [B, L, 3C]
         q, k, v = qkv.chunk(3, dim=-1)                  # [N,  C] or [B, L,  C]
-
-        attn_drop = self.dropout if self.training else 0.0
         
         (B, L, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
@@ -97,12 +95,19 @@ class SelfAttn(nn.Module):
         q = self.rope(pos.half(), q, hdim=-3)              # [B, H, L, D]
         k = self.rope(pos.half(), k, hdim=-3)              # [B, H, L, D]
         
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+            
         out = flex_attention(q, k, v, block_mask=block_mask)
 
-        out = out.permute(0, 2, 1, 3)
-        out = out.flatten(-2)
-        
-        return self.proj_drop(self.proj(out))
+        out = out.permute(0, 2, 1, 3).contiguous().view(B, L, C)
+        out = self.proj_drop(self.proj(out))
+
+        new_kv = (k, v) if use_cache else None
+        return (out, new_kv)
 
 class FFN(nn.Module):
     def __init__(self, embed_dim, dropout=0.1) -> None:
@@ -127,7 +132,8 @@ class SABlock(nn.Module):
         self.sa  = SelfAttn( embed_dim, num_heads, dropout)
         self.ffn = FFN(embed_dim, dropout)
     
-    def forward(self, feat, pos, block_mask):
-        feat = feat+self.sa(feat, pos, block_mask)
-        feat = feat+self.ffn(feat)
-        return feat
+    def forward(self, feat, pos, block_mask=None, past_kv=None, use_cache=False):
+        out, new_kv = self.sa(feat, pos, block_mask, past_kv, use_cache)
+        feat = feat + out
+        feat = feat + self.ffn(feat)
+        return feat, new_kv
