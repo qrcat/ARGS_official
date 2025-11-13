@@ -1,3 +1,8 @@
+import glob
+from pathlib import Path
+import warnings
+
+from tqdm import tqdm
 import configs
 
 from trainer import ARGSModel
@@ -17,6 +22,7 @@ import os
 
 def init_dataset(args):
     kw_args = dict(
+        dir=args.dataset,
         pattern=args.pattern, 
         meta_file=args.meta_file, 
         max_len=args.seqlen,
@@ -25,8 +31,8 @@ def init_dataset(args):
         padding_value=256,
         local=args.local_coords_data, 
         apply_noise=args.add_noise_on_data, 
-        clip_outside=True,
-        apply_quantize=False, 
+        clip_outside=False,
+        apply_quantize=True, 
         return_indices=True,
         # 
         batch_size=args.batch_size, 
@@ -34,10 +40,7 @@ def init_dataset(args):
         shuffle=args.shuffle,
         split=[args.train_split, 1-args.train_split],
     )
-    if os.path.isfile(args.dataset):
-        kw_args['path'] = args.dataset
-    else:
-        kw_args['dir'] = args.dataset
+        
     return BatchCEDataModule(
         **kw_args
     )
@@ -47,6 +50,7 @@ def init_model(args):
     config['input_dim'] = 14
     config['output_dim'] = 2*14*256
 
+    config['global_lr'] = args.global_lr
     config['pos_weight'] = args.pos_weight
     config['warmup_rate'] = args.warmup_rate
     config['scatter_bce'] = args.scatter_bce
@@ -62,6 +66,9 @@ if __name__ == "__main__":
     # python train.py --dataset /mnt/private_rqy_tj/modelsplat_enhanced_block_pkl/ --pattern "airplane*/*block.pkl" --meta_file airplane.json --save_meta_in_disk --batch_size 4 --num_worke rs 64 --shuffle --logger wandb --model base_m_384 --devices 0 1 2 3 4 5 6 7 --accumulate_grad 2
 
     # NCCL_SOCKET_IFNAME=bond3 python train.py --dataset /mnt/private_rqy_tj/modelsplat_enhanced_block_pkl/ --pattern "*/*block.pkl" --preload_in_memory --save_meta_in_disk --batch_size 8 --num_workers 64 --shuffle --logger wandb --model base_m_768 --devices 0 1 2 3 4 5 6 7 --accumulate_grad 8 
+    # NCCL_SOCKET_IFNAME=bond3 python train.py --dataset /mnt/private_rqy_tj/modelsplat_enhanced_block_pkl/ --pattern "airplane*/*block.pkl" --meta_file airplane.json --save_meta_in_disk --batch_size 4 --num_workers 64 --shuffle --logger wandb --model base_m_384 --devices 0 1 2 3 4 5 6 7 --accumulate_grad 2 --epoch 1000 --seqlen 1024 --checkpoint log/args_args/oatsvzes/checkpoints/epoch=905-step=9060.ckp
+    
+    # NCCL_SOCKET_IFNAME=bond3 python train.py --dataset /mnt/private_rqy_tj/shape_splat_block/ --pattern "02691156/*block.pkl" --meta_file airplane.json --save_meta_in_disk --batch_size 32 --num_workers 64 --shuffle --logger wandb --model args_l_768_d24_hd64 --devices 0 1 2 3 4 5 6 7 --accumulate_grad 2 --epoch 1000 --seqlen 1024 --global_lr 1e-3
     parser = argparse.ArgumentParser()
 
     parser_model = parser.add_argument_group('model')
@@ -69,6 +76,7 @@ if __name__ == "__main__":
     parser_model.add_argument('--model', type=str, default='base_s_192', choices=configs.__all__)
     parser_model.add_argument('--method', type=str, default='args', choices=['mask', 'args', 'mask2args', 'mask_ce', 'pca'])
     parser_model.add_argument('--pop_key', action='store_true')
+    parser_model.add_argument('--global_lr', type=float, default=1e-4)
     parser_model.add_argument('--warmup_rate', type=float, default=0.1)
     parser_model.add_argument('--label_smooth', type=float, default=0.0)
     parser_model.add_argument('--pos_weight', type=float, default=1.0, help='positive examples weight for bce loss.')
@@ -89,7 +97,7 @@ if __name__ == "__main__":
     parser_datas.add_argument('--dataset', type=str, default=".")
     parser_datas.add_argument('--pattern', type=str, default="*block.pkl")
     parser_datas.add_argument('--meta_file', type=str, default="meta.json")
-    parser_datas.add_argument('--seqlen', type=int, default=8192-1)
+    parser_datas.add_argument('--seqlen', type=int, default=1024-1)
     parser_datas.add_argument('--train_split', type=float, default=1.0)
     parser_datas.add_argument('--local_coords_data', action='store_true')
     parser_datas.add_argument('--add_noise_on_data', action='store_true')
@@ -97,7 +105,7 @@ if __name__ == "__main__":
     parser_datas.add_argument('--save_meta_in_disk', action='store_true')
 
     parser_datas.add_argument('--batch_size', type=int, default=8)
-    parser_datas.add_argument('--num_workers', type=int, default=32)
+    parser_datas.add_argument('--num_workers', type=int, default=0)
     parser_datas.add_argument('--shuffle', action='store_true')
     # checkpoint
     parser_check = parser.add_argument_group('checkpoint')
@@ -144,6 +152,7 @@ if __name__ == "__main__":
             devices=args.devices,
             logger=logger,
             precision='16-mixed',
+            # precision='32',
             strategy=args.strategy,
         )
 
@@ -151,7 +160,7 @@ if __name__ == "__main__":
             model.apply(model.init_weights)
             print('model initialized')
         else:
-            state_dict = torch.load(args.checkpoint, weights_only=False)['state_dict']
+            state_dict = torch.load(args.checkpoint, weights_only=False, map_location='cpu')['state_dict']
             rets = model.load_state_dict(state_dict, strict=False)
             print(rets)
             
@@ -174,7 +183,10 @@ if __name__ == "__main__":
         config = getattr(configs, args.model)
 
         model = init_model(args)
-        model.load_state_dict(torch.load(args.checkpoint)['state_dict'])
+        if args.checkpoint:
+            model.load_state_dict(torch.load(args.checkpoint, weights_only=False)['state_dict'])
+        else:
+            warnings.warn('No checkpoint provided')
         model.eval()
         model.cuda()
 
@@ -224,9 +236,6 @@ if __name__ == "__main__":
                 else:
                     feat_pca_scaled = scaler_minmax.transform(feat_pca)
 
-                # recon[..., 3:4] = torch.sigmoid(recon[...,  3:4])
-                # recon[..., 4:7] = torch.from_numpy(RGB2SH(feat_pca_scaled))
-                # recon[..., 7:10] = torch.exp(recon[..., 7:10])
                 recon = prev_gs
                 prev_gs[..., 4:7] = torch.from_numpy(RGB2SH(feat_pca_scaled))
 
@@ -236,49 +245,84 @@ if __name__ == "__main__":
         else:
             quantize = Quantize()
 
-            dataset = CEData(args.dataset)
+            datasets = []
+            if os.path.isfile(args.dataset):
+                dataset = CEData(
+                    args.dataset,
+                    clip_outside=True,
+                    apply_quantize=True,
+                    return_indices=True,
+                )
+                datasets.append(dataset)
+            else:
+                for file in Path(args.dataset).glob(args.pattern):
+                    dataset = CEData(
+                        file,
+                        apply_quantize=True,
+                        return_indices=True,
+                    )
+                    datasets.append(dataset)
             
-            data = dataset[0]
+            for index, dataset in enumerate(tqdm(datasets)):
+                gt    = dataset[len(dataset)-1]
+                gt_gs = gt[0][~gt[3][..., 0]]
+                gt_gs = quantize.dequantize(*gt_gs.split([3, 1, 3, 3, 4], dim=-1))
+                gt_gs = activated_gs2gs(*gt_gs)
+                save_ply(f'in_domain_level_gt/decode_{dataset.path.stem}_gt{len(dataset.cumsum[:21]-1)}.ply', *gt_gs)
+                for level, _ in enumerate(dataset.cumsum[:21]):
+                    prev_inds = dataset.cumsum[level]
+                    next_inds = dataset.cumsum[level+1]
 
-            past_kvs = None
+                    gt        = dataset[next_inds-1]
+                    mask      = gt[3].clone()
+                    mask[prev_inds:next_inds] = False
+                    
+                    gt_gs = gt[0][~mask[..., 0]]
+                    gt_gs = quantize.dequantize(*gt_gs.split([3, 1, 3, 3, 4], dim=-1))
+                    gt_gs = activated_gs2gs(*gt_gs)
+                    save_ply(f'in_domain_level_gt/decode_{dataset.path.stem}_gt{level}.ply', *gt_gs)
             
-            inputs, positions = data[0][None], data[1][None]
+                data = dataset[0]
+                past_kvs = None
+                
+                inputs, positions = data[0][None], data[1][None]
 
-            decode_sequence = torch.zeros(0, 14, device='cuda')
+                decode_sequence = torch.zeros(0, 14, device='cuda')
+                for level in range(1, 12):
+                    with torch.autocast('cuda', dtype=torch.float16):
+                        B, S, _ = inputs.shape
+                        inputs, positions = inputs.cuda(), positions.cuda()
+                        
+                        rets, new_kvs = model(inputs, positions, past_kvs=past_kvs, use_cache=True)
+                        logits, dense = rets[..., :1], rets[..., 1:]
+                        
+                        mask = logits > 0
+                        
+                        decode_sequence = torch.cat([decode_sequence, inputs[~mask[..., 0]]], dim=0)
 
-            for level in range(1, 10):
-                with torch.no_grad():
-                    B, S, _ = inputs.shape
-                    inputs, positions = inputs.cuda(), positions.cuda()
-                    rets, new_kvs = model(inputs.cuda(), positions.cuda(), past_kvs=past_kvs, use_cache=True)
-                    logits, dense = rets[..., :1], rets[..., 1:]
-                    
-                    mask = logits > 0
+                        new_gs = dense.view(1, S, 256, 2, 14).permute(0, 2, 1, 3, 4).argmax(dim=1)
+                        new_gs = new_gs[mask[..., 0]].view(-1, 14)
 
-                    decode_sequence = torch.cat([decode_sequence, inputs[~mask[..., 0]]], dim=0)
+                        if not mask.any():
+                            break
+                        
+                        print(f'level {level} with {inputs.shape[1]} leaf, split item {mask.float().mean()}')
 
-                    new_gs = dense.view(1, S, 256, 2, 14).permute(0, 2, 1, 3, 4).argmax(dim=1)
-                    new_gs = new_gs[mask[..., 0]].view(-1, 14)
+                        # ===================================================================
+                        # decode the sequence and output the ply file
+                        # ===================================================================
+                        
+                        now_gs = torch.cat([decode_sequence, new_gs], dim=0)
+                        now_gs = quantize.dequantize(*now_gs.split([3, 1, 3, 3, 4], dim=-1))
+                        now_gs = activated_gs2gs(*now_gs)
+                        # save_ply(f'output/decode{index}_level_{level}.ply', *now_gs)
 
-                    if not mask.any():
-                        break
-                    
-                    # ===================================================================
-                    # decode the sequence and output the ply file
-                    # ===================================================================
-                    now_gs = torch.cat([decode_sequence, new_gs], dim=0)
-                    now_gs = quantize.dequantize(*now_gs.split([3, 1, 3, 3, 4], dim=-1))
-                    now_gs = activated_gs2gs(*now_gs)
-                    save_ply(f'decode_level_{level}.ply', *now_gs)
-                    # ===================================================================
+                        save_ply(f'outofdomain/decode_{dataset.path.stem}_level{level}.ply', *now_gs)
+                        # ===================================================================
 
-                    inputs = new_gs[None]
-                    positions = quantize._dequantize_x(inputs[..., :3])
-
-                    inputs[..., 3:4] += 256 * 1
-                    inputs[..., 4:7] += 256 * 2
-                    inputs[..., 7:10] += 256 * 3
-                    inputs[..., 10:14] += 256 * 4
-                    
-                    past_kvs = new_kvs
-            
+                        # inputs = torch.cat(quantize.dequantize(*new_gs.split([3, 1, 3, 3, 4], dim=-1)), dim=-1)
+                        inputs = new_gs[None]
+                        positions = quantize._dequantize_x(inputs[..., :3])
+                        
+                        past_kvs = new_kvs
+                

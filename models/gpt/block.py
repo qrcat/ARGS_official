@@ -61,39 +61,29 @@ class SelfAttn(nn.Module):
         self.dim_heads = embed_dim // num_heads
         self.dropout   = dropout
 
-        self.ln_prev   = nn.LayerNorm(embed_dim)
         self.qkv       = nn.Linear(embed_dim, self.embed_dim*3)
         self.rope      = RoPE()
 
         self.proj      = nn.Linear(embed_dim, embed_dim)
         self.proj_drop = nn.Dropout(dropout)
 
-    def forward(self, feat, pos, block_mask=None, past_kv=None, use_cache=False):
-        """
-        feat            : [N, C] or [B, L, C]   feature
-        pos             : [N, 3] or [B, L, 3]   position
-        cu_seqlens_gs   : [B+1] or None         cumulative sequence lengths
-        mask            : [B, 1, L, L] or None  attention mask
-        
-        return          : [N, C] or [B, L, C]   output
-        """
-        x       = self.ln_prev(feat)                    # [N,  C] or [B, L,  C]
-        qkv     = self.qkv(x)                           # [N, 3C] or [B, L, 3C]
-        q, k, v = qkv.chunk(3, dim=-1)                  # [N,  C] or [B, L,  C]
+    def forward(self, feat, pos, score_mod=None, block_mask=None, past_kv=None, use_cache=False):
+        qkv     = self.qkv(feat)               # [B, L, 3C]
+        q, k, v = qkv.chunk(3, dim=-1)         # [B, L,  C]
         
         (B, L, C), H, D = feat.shape, self.num_heads, self.dim_heads
 
-        q = q.view(B, L, H, D)                      # [B, L, H, D]
-        k = k.view(B, L, H, D)                      # [B, L, H, D]
-        v = v.view(B, L, H, D)                      # [B, L, H, D]
+        q = q.view(B, L, H, D)                 # [B, L, H, D]
+        k = k.view(B, L, H, D)                 # [B, L, H, D]
+        v = v.view(B, L, H, D)                 # [B, L, H, D]
         
-        q = q.permute(0, 2, 1, 3)                   # [B, H, L, D]
-        k = k.permute(0, 2, 1, 3)                   # [B, H, L, D]
-        v = v.permute(0, 2, 1, 3)                   # [B, H, L, D]
+        q = q.permute(0, 2, 1, 3)              # [B, H, L, D]
+        k = k.permute(0, 2, 1, 3)              # [B, H, L, D]
+        v = v.permute(0, 2, 1, 3)              # [B, H, L, D]
 
         pos = pos.unsqueeze(1)
-        q = self.rope(pos.half(), q, hdim=-3)              # [B, H, L, D]
-        k = self.rope(pos.half(), k, hdim=-3)              # [B, H, L, D]
+        q = self.rope(pos.half(), q, hdim=-3)  # [B, H, L, D]
+        k = self.rope(pos.half(), k, hdim=-3)  # [B, H, L, D]
         
         if past_kv is not None:
             past_k, past_v = past_kv
@@ -101,7 +91,7 @@ class SelfAttn(nn.Module):
             k = torch.cat([past_k, k], dim=2)
             v = torch.cat([past_v, v], dim=2)
             
-        out = flex_attention(q, k, v, block_mask=block_mask)
+        out = flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask)
 
         out = out.permute(0, 2, 1, 3).contiguous().view(B, L, C)
         out = self.proj_drop(self.proj(out))
@@ -110,30 +100,30 @@ class SelfAttn(nn.Module):
         return (out, new_kv)
 
 class FFN(nn.Module):
-    def __init__(self, embed_dim, dropout=0.1) -> None:
+    def __init__(self, embed_dim, latent_scale=4, dropout=0.1) -> None:
         super().__init__()
         self.embed_dim = embed_dim
-        self.ln_ffn  = nn.LayerNorm(self.embed_dim)
         self.ffn     = nn.Sequential(
-            nn.Linear(self.embed_dim, 2*self.embed_dim),
-            nn.GELU(),
-            nn.Linear(2*self.embed_dim, self.embed_dim)
+            nn.Linear(self.embed_dim, latent_scale*self.embed_dim),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(latent_scale*self.embed_dim, self.embed_dim)
         )
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = self.ln_ffn(x)
         x = self.dropout(self.ffn(x))
         return x
 
 class SABlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.1) -> None:
+    def __init__(self, embed_dim, num_heads, latent_scale=4, dropout=0.1) -> None:
         super().__init__()
-        self.sa  = SelfAttn( embed_dim, num_heads, dropout)
-        self.ffn = FFN(embed_dim, dropout)
+        self.ln_sa  = nn.LayerNorm(embed_dim)
+        self.ln_ffn = nn.LayerNorm(embed_dim)
+        self.sa     = SelfAttn( embed_dim, num_heads, dropout)
+        self.ffn    = FFN(embed_dim, latent_scale, dropout)
     
-    def forward(self, feat, pos, block_mask=None, past_kv=None, use_cache=False):
-        out, new_kv = self.sa(feat, pos, block_mask, past_kv, use_cache)
+    def forward(self, feat, pos, score_mod=None, block_mask=None, past_kv=None, use_cache=False):
+        out, new_kv = self.sa(self.ln_sa(feat), pos, score_mod, block_mask, past_kv, use_cache)
         feat = feat + out
-        feat = feat + self.ffn(feat)
+        feat = feat + self.ffn(self.ln_ffn(feat))
         return feat, new_kv
