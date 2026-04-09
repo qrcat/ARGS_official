@@ -45,6 +45,7 @@ class GPT(LightningModule):
         feat = self.embed(sequence)
 
         if use_cache:
+            score_mod = None
             block_mask = None
         else:
             B, S, C = feat.shape

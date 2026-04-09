@@ -1,0 +1,6 @@
+faiss-cpu==1.12
+wandb>=0.12.10
+scipy
+joblib
+plyfile
+lightning

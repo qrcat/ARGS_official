@@ -5,8 +5,7 @@ from pgs import PGSMoments, PGSMomentSample
 from scipy.spatial.transform import Rotation
 import numpy as np
 
-pgs = PGSMoments.load("point_cloud.ply")
-# pgs = PGSMomentSample.load("point_cloud.ply")
+pgs = PGSMoments.load("dataset/gradio_output.ply")
 merge_list = pgs.simplify(1)
 merge_list = merge_list[::-1]
 # 建立分裂的连接关系

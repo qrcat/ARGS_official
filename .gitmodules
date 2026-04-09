@@ -1,7 +1,0 @@
-[submodule "submodules/diff-gaussian-rasterization"]
-	path = submodules/diff-gaussian-rasterization
-	url = https://github.com/graphdeco-inria/diff-gaussian-rasterization.git
-	branch = dr_aa
-[submodule "gs_decay/extern/pybind11"]
-	path = gs_decay/extern/pybind11
-	url = https://github.com/pybind/pybind11.git

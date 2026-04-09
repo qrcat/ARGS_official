@@ -1,108 +1,45 @@
-# install 
+# ARGS: Auto-Regressive Gaussian Splatting via Parallel Progressive Next-Scale Prediction
+
+[Quanyuan Ruan†](https://qrcat.github.io/)<sup>1</sup>, Kewei Shi<sup>2</sup>, [Jiabao Lei†](https://jblei.site/)<sup>3</sup>, Xifeng Gao*<sup>4</sup>, Xiaoguang Han*<sup>3</sup>
+
+<sup>1</sup>South China University of Technology, <sup>2</sup>The University of Hong Kong, <sup>3</sup>The Chinese University of Hong Kong, Shenzhen, <sup>4</sup>Lightspeed
+
+<sup>†</sup> Equal Contribution, <sup>*</sup> Corresponding authors
+
+This is the official repository for ARGS(CVPRF 2026)
+
+
+
+## Install
 ```bash
-# https://pytorch.org/get-started/previous-versions/
-
-pip install spconv-cu${CUDA_VERSION}
-pip install torch-scatter -f https://data.pyg.org/whl/torch-{TORCH_VERSION}+cu${CUDA_VERSION}.html
-pip install git+https://github.com/Dao-AILab/flash-attention.git
-pip install huggingface_hub timm
-
-conda install -c pytorch faiss-cpu=1.12.0
+conda create -n args python=3.10 -y
+conda activate args
+# install torch >= 2.5.1 from https://pytorch.org/get-started/locally/
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu118
+# install requirements
+pip install -r requirements.txt
 ```
 
+## Example
 ```bash
-pip install scipy plyfile faiss-cpu==1.12.0
+python example.py
 ```
 
+## Main Usage 
+
+### Generate Data
 ```bash
-# install torch from https://pytorch.org/get-started/previous-versions/
-
-pip install torch-scatter -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
-
-pip install lightning
+python example_block.py
+# or
+python build_merge_list.py --input dataset --output dataset --workers 1
 ```
 
-for condition
-```
-pip install open_clip_torch
-```
-
-# 生成数据
-
-## 生成modelsplat与shapesplat数据
-
-```bash
-python build_merge_list.py --shapesplat_ply xxx --modelsplat_ply xxx --output xxx
-```
-
-## 数据增强
-
-对颜色\位置等信息进行增强(单个文件)
+### Training
 
 ```bash
-python enhance_data.py --input xxx.ply --output xxx.ply
+python train.py --dataset dataset/dataset --pattern "*block.pkl" --batch_size 1 --num_workers 1 --shuffle --logger wandb --model base_s_192 --devices 0 --accumulate_grad 1
 ```
-
-## 渲染modelsplat与shapesplat数据(不参与训练,只为了可视化)
-
-会在output地址下建立文件夹输出结果,需要安装```gsplat```
-
-modelsplat
-
+### Eval
 ```bash
-python render_modelsplat.py --modelsplat_ply xxx
+python train.py --dataset dataset/dataset --pattern "*block.pkl" --model base_s_192 --devices 0 --eval  --checkpoint log/args_args/kpj7jpb3/checkpoints/epoch=99-step=100.ckpt
 ```
-
-shapesplat
-
-```bash
-python render_shapesplat.py --shapesplat_ply xxx
-```
-
-渲染单个GS文件
-
-```bash
-python render_single.py --path xxx.ply
-```
-
-# 训练模型
-
-## 训练VQVAE
-
-```bash
-python train_vqvae.py
-```
-
-## 基于量化后的分类训练Transformer
-
-```bash
-python train_transformer1.py
-```
-
-# 一些工具
-
-```pgs/__init__.py```简化算法的核心
-
-```pgs/merge.py```将两个高斯merge的函数,建议使用```merge_gaussian_moments```或者```merge_gaussian_inv```,是论文中的一个核心创新点,在```pgs/__init__.py```有使用.
-
-
-```models/transformer.py```transformer的代码
-
-```models/svqvae.py```VQVAE的代码
-
-
-```utils/args.py```解码
-
-```utils/gaussian.py```求协方差与从协方差计算高斯的尺度\旋转的工具. numpy的计算没问题,但需注意torch的四元数是xyzw还是wxyz(还没有验证),高斯的定义是wxyz.
-
-```utils/general.py```一些数学函数
-
-```utils/io.py```输入输出
-
-```utils/quantize.py```量化
-
-```utils/quaternion.py```抄的pytorch3d的四元数
-
-```utils/render.py```渲染的一些工具
-
-```utils/shs.py```球谐转RGB与RGB转球谐

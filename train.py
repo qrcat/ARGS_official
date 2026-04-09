@@ -6,12 +6,9 @@ from tqdm import tqdm
 import configs
 
 from trainer import ARGSModel
-from models.data import BatchData, BatchDataModule
-from models.gtransformer import GTransformer
 from models.gpt.data import BatchCEDataModule
 
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.utilities import rank_zero_only
 import torch
 import lightning as L
 import datetime
@@ -50,7 +47,7 @@ def init_model(args):
     config['input_dim'] = 14
     config['output_dim'] = 2*14*256
 
-    config['global_lr'] = args.global_lr
+    # config['global_lr'] = args.global_lr
     config['pos_weight'] = args.pos_weight
     config['warmup_rate'] = args.warmup_rate
     config['scatter_bce'] = args.scatter_bce
@@ -167,7 +164,6 @@ if __name__ == "__main__":
         trainer.fit(model, datamodule=dataset, ckpt_path=args.resume_ckpt)
     else:
         from models.gpt.data import CEData
-        from models.gtransformer import GTransformer
         from utils.quaternion import normalize_quaternions
         from utils.quantize import Quantize
         from utils.io import activated_gs2gs, save_ply
@@ -268,7 +264,7 @@ if __name__ == "__main__":
                 gt_gs = gt[0][~gt[3][..., 0]]
                 gt_gs = quantize.dequantize(*gt_gs.split([3, 1, 3, 3, 4], dim=-1))
                 gt_gs = activated_gs2gs(*gt_gs)
-                save_ply(f'in_domain_level_gt/decode_{dataset.path.stem}_gt{len(dataset.cumsum[:21]-1)}.ply', *gt_gs)
+                save_ply(f'dataset/decode_{dataset.path.stem}_gt{len(dataset.cumsum[:21]-1)}.ply', *gt_gs)
                 for level, _ in enumerate(dataset.cumsum[:21]):
                     prev_inds = dataset.cumsum[level]
                     next_inds = dataset.cumsum[level+1]
@@ -280,7 +276,7 @@ if __name__ == "__main__":
                     gt_gs = gt[0][~mask[..., 0]]
                     gt_gs = quantize.dequantize(*gt_gs.split([3, 1, 3, 3, 4], dim=-1))
                     gt_gs = activated_gs2gs(*gt_gs)
-                    save_ply(f'in_domain_level_gt/decode_{dataset.path.stem}_gt{level}.ply', *gt_gs)
+                    save_ply(f'dataset/decode_{dataset.path.stem}_gt{level}.ply', *gt_gs)
             
                 data = dataset[0]
                 past_kvs = None
@@ -317,7 +313,7 @@ if __name__ == "__main__":
                         now_gs = activated_gs2gs(*now_gs)
                         # save_ply(f'output/decode{index}_level_{level}.ply', *now_gs)
 
-                        save_ply(f'outofdomain/decode_{dataset.path.stem}_level{level}.ply', *now_gs)
+                        save_ply(f'dataset/decode_{dataset.path.stem}_level{level}.ply', *now_gs)
                         # ===================================================================
 
                         # inputs = torch.cat(quantize.dequantize(*new_gs.split([3, 1, 3, 3, 4], dim=-1)), dim=-1)

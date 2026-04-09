@@ -1,20 +1,8 @@
 from models.gpt import GPT
 from models.warmup import CosineWarmupScheduler
-from utils.local import to_global
-from utils.quaternion import normalize_quaternions
-
 import torch
 import torch.nn as nn
 import warnings
-
-from torch.amp import autocast
-from lightning import LightningModule
-from torch.nn.functional import normalize
-try:
-    from torch_scatter import scatter_mean, scatter_sum
-except:
-    warnings.warn('torch_scatter is not installed')
-
 
 
 class ARGSModel(GPT):

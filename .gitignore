@@ -11,5 +11,8 @@ events.*
 datasets
 output
 
+log/
 data/
 ckpt/
+
+!dataset/gradio_output.ply

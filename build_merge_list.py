@@ -5,52 +5,61 @@ from pathlib import Path
 from tqdm import tqdm
 import multiprocessing
 import argparse
+import pickle
 import time
-
-parser = argparse.ArgumentParser()
-# inputs
-parser.add_argument("--shapesplat_ply", default="/mnt/private_rqy/gs_data/shapesplat_ply")
-parser.add_argument("--modelsplat_ply", default="/mnt/private_rqy/gs_data/modelsplat_ply")
-# outputs
-parser.add_argument("--output", default="/apdcephfs/share_303772734/rqy/gs_merge/")
-# workers
-parser.add_argument("--workers", type=int, default=32)
-parser.add_argument("--debug", action="store_true")
-args = parser.parse_args()
+import copy
 
 
-output_path = Path(args.output)
-output_path.mkdir(parents=True, exist_ok=True)
-
-shapesplat_plys = sorted(Path(args.shapesplat_ply).glob("*.ply"))
-modelsplat_plys = sorted(Path(args.modelsplat_ply).glob("*/*/*/*.ply"))
-shapesplat_npys = [output_path / (path.stem + '.npz') for path in shapesplat_plys]
-modelsplat_npys = [
-    output_path / ('_'.join(path.as_posix().split('/')[-4:-1]) + '.npz') for path in modelsplat_plys
-]
-
-input_plys = shapesplat_plys + modelsplat_plys
-output_npys = shapesplat_npys + modelsplat_npys
-
-tqdm.write(f"Total {len(input_plys)} files")
-
-def get_merge_list(path: Path, output: Path):
-    if output.exists():
-        try:
-            np.load(output)
-            return
-        except:
-            pass
-    
+def get_merge_list(data_index:int, path: Path, output_file: Path, text=''):
     pgs = PGSMoments.load(path, save=False)
-    merge_list = pgs.simplify(1)
+    merge_list = pgs.simplify(1, 'merge_gaussian_moments_ub')
     merge_list = merge_list[::-1]
-    source = np.stack([np.stack((i['source'], i['target']), axis=1) for i in merge_list])
-    target = np.stack([i['mixed'] for i in merge_list])
 
-    np.savez(output, source=source, target=target)
+    # 建立分裂的连接关系
+    tmap = {}
+    for merge in merge_list:
+        tmap[merge['mixed_id']] = [i if isinstance(i, int) else i.item() for i in [merge['source_id'], merge['target_id']]]
+    root = merge_list[0]['mixed_id']
+    # 获得分层的GS
+    prev_gs_to_split = [root]
+    count = []
+    sequence, split_gs, split_bl = [], [], []
+    output = {}
+    while True:
+        next_gs_to_split = []
 
-    tqdm.write(f"{path} done")
+        count.append(len(prev_gs_to_split))
+
+        for index in sorted(prev_gs_to_split, key=lambda x:np.prod(pgs._data[x, 7:10]), reverse=True):
+            sequence.append(index)
+            if tmap.get(index):
+                split_gs.append([tmap[index][0], tmap[index][1]])
+                split_bl.append(True)
+
+                next_gs_to_split.append(tmap[index][0])
+                next_gs_to_split.append(tmap[index][1])
+            else:
+                split_gs.append([index, index]) # 不分裂，填充自己的特征
+                split_bl.append(False)
+        
+        if len(next_gs_to_split) == 0: # 没有分裂的gs
+            break
+
+        prev_gs_to_split = next_gs_to_split
+
+    cumsum = np.cumsum([0]+count[:-1])
+
+    output['data'] = pgs._data
+    output['count'] = np.array(count)
+    output['cumsum'] = cumsum
+    output['sequence'] = np.array(sequence)
+    output['split_gs'] = np.array(split_gs)
+    output['split_bl'] = np.array(split_bl)
+
+    with open(output_file, 'wb') as f:
+        pickle.dump(output, f)
+
+    tqdm.write(f"{data_index}: {path} done")
 
 def worker(queue, count) -> None:
     while True:
@@ -58,63 +67,77 @@ def worker(queue, count) -> None:
         if item is None:
             break
 
-        get_merge_list(item[0], item[1])
+        get_merge_list(*item)
         
         with count.get_lock():
             count.value += 1
         
         queue.task_done()
 
-queue = multiprocessing.JoinableQueue()
-count = multiprocessing.Value("i", 0)
-processes = []
 
-# use parallel processing
-for worker_i in range(args.workers):
-    process = multiprocessing.Process(
-        target=worker,
-        args=(queue, count)
-    )
-    process.daemon = True
-    process.start()
-    processes.append(process)
+def main(args):
+    output_path = Path(args.output)
+    breakpoint()
+    output_path.mkdir(parents=True, exist_ok=True)
 
-for input_ply, output_npy in zip(input_plys, output_npys):
-    queue.put((input_ply, output_npy))
+    if args.type == 'modelsplat':
+        pattern = '*/point_cloud.ply'
+    elif args.type == 'none':
+        pattern = '*.ply'
+    
+    input_plys = Path(args.input).glob(pattern)
 
-start_time = time.time()
-queue.join()
-end_time = time.time()
-print(f"All tasks completed in {end_time - start_time:.2f} seconds")
-print(f"Processed {count.value} items")
+    queue = multiprocessing.JoinableQueue()
+    count = multiprocessing.Value("i", 0)
+    processes = []
 
-for worker_i in range(args.workers):
-    queue.put(None)
+    # use parallel processing
+    for worker_i in range(args.workers):
+        process = multiprocessing.Process(
+            target=worker,
+            args=(queue, count)
+        )
+        process.daemon = True
+        process.start()
+        processes.append(process)
 
-for p in processes:
-    p.join()
-print("All worker processes finished")
+    for i, input_ply in enumerate(input_plys):
+        target_dir = output_path / input_ply.parent.name
+        target_dir.mkdir(exist_ok=True, parents=True)
+        output_pkl = target_dir / (input_ply.stem + '_block.pkl')
 
-# pgs = PGSMoments.load("gradio_output.ply")
-# for size in [32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1]:
-#     pgs.simplify(size)
-#     pgs.save(f"output/zip-{size}.ply")
+        if args.type == 'modelsplat':
+            text = input_ply.parent.name.split('_')[0]
+        else:
+            text = ''
+
+        queue.put((i, input_ply, output_pkl, text))
+
+    start_time = time.time()
+    queue.join()
+    end_time = time.time()
+    print(f"All tasks completed in {end_time - start_time:.2f} seconds")
+    print(f"Processed {count.value} items")
+
+    for worker_i in range(args.workers):
+        queue.put(None)
+
+    for p in processes:
+        p.join()
+    print("All worker processes finished")
 
 
-# pgs = PGS.load("gradio_output.ply")
-# for size in [32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1]:
-#     pgs.simplify(size)
-#     pgs.save(f"zip-{size}.ply")
-# merge_list = pgs.simplify(1)
-# merge_list = merge_list[::-1]
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    # inputs
+    parser.add_argument("--input", default="data/airplane_enhance")
+    # outputs
+    parser.add_argument("--output", default="data/airplane_block")
+    # type
+    parser.add_argument("--type", default="none", choices=['none', 'modelsplat', 'shapesplat'])
+    # workers
+    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
 
-# source = np.stack([np.stack((i['source'], i['target']), axis=1) for i in merge_list])
-# target = np.stack([i['mixed'] for i in merge_list])
-
-# np.savez("datasets/merge_origin/0.npz", source=source, target=target)
-
-# source = source.transpose(0, 2, 1)
-# source = activated_gs2train_gs(source)
-# target = activated_gs2train_gs(target)
-
-# np.savez("datasets/merge/0.npz", source=source, target=target)
+    main(args)
