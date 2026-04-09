@@ -6,10 +6,6 @@
 
 <sup>†</sup> Equal Contribution, <sup>*</sup> Corresponding authors
 
-This is the official repository for ARGS(CVPRF 2026)
-
-
-
 ## Install
 ```bash
 conda create -n args python=3.10 -y
