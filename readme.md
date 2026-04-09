@@ -1,6 +1,6 @@
 # ARGS: Auto-Regressive Gaussian Splatting via Parallel Progressive Next-Scale Prediction
 
-[Quanyuan Ruan†](https://qrcat.github.io/)<sup>1</sup>, Kewei Shi<sup>2</sup>, [Jiabao Lei†](https://jblei.site/)<sup>3</sup>, Xifeng Gao*<sup>4</sup>, Xiaoguang Han*<sup>3</sup>
+[Quanyuan Ruan†](https://qrcat.github.io/)<sup>1</sup>, Kewei Shi†<sup>2</sup>, [Jiabao Lei](https://jblei.site/)<sup>3</sup>, Xifeng Gao*<sup>4</sup>, Xiaoguang Han*<sup>3</sup>
 
 <sup>1</sup>South China University of Technology, <sup>2</sup>The University of Hong Kong, <sup>3</sup>The Chinese University of Hong Kong, Shenzhen, <sup>4</sup>Lightspeed
 
